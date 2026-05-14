@@ -25,6 +25,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelId>("FRE-5.5");
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [uploadedFileType, setUploadedFileType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const { toast } = useToast();
 
@@ -80,6 +81,7 @@ export default function ChatPage() {
       }
 
       setUploadedFile(data.filename);
+      setUploadedFileType(file.type);
       setMessages([]);
       toast({
         title: "تم رفع الملف",
@@ -103,6 +105,7 @@ export default function ChatPage() {
       // silently ignore
     }
     setUploadedFile(null);
+    setUploadedFileType(null);
     setMessages([]);
   };
 
@@ -176,6 +179,7 @@ export default function ChatPage() {
             onSend={handleSendMessage}
             onUpload={handleUpload}
             uploadedFile={uploadedFile}
+            uploadedFileType={uploadedFileType}
             onClearFile={handleClearFile}
             disabled={sendMessageMutation.isPending}
             uploading={uploading}

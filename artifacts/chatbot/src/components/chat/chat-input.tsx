@@ -1,5 +1,8 @@
 import React, { useState, useRef } from "react";
-import { SendHorizontal, Paperclip, X, FileText, Loader2 } from "lucide-react";
+import {
+  SendHorizontal, Paperclip, X, FileText, Image,
+  FileJson, FileSpreadsheet, File, Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -7,15 +10,31 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   onUpload?: (file: File) => Promise<void>;
   uploadedFile?: string | null;
+  uploadedFileType?: string | null;
   onClearFile?: () => void;
   disabled?: boolean;
   uploading?: boolean;
+}
+
+const ACCEPTED =
+  "application/pdf,image/png,image/jpeg,image/gif,image/webp,image/bmp," +
+  "text/plain,text/markdown,text/csv,application/json,application/xml,text/xml," +
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword";
+
+function FileIcon({ type, className }: { type?: string | null; className?: string }) {
+  if (!type) return <FileText className={className} />;
+  if (type.startsWith("image/")) return <Image className={className} />;
+  if (type === "text/csv" || type === "application/vnd.ms-excel") return <FileSpreadsheet className={className} />;
+  if (type === "application/json") return <FileJson className={className} />;
+  if (type.includes("word") || type.includes("docx")) return <File className={className} />;
+  return <FileText className={className} />;
 }
 
 export function ChatInput({
   onSend,
   onUpload,
   uploadedFile,
+  uploadedFileType,
   onClearFile,
   disabled,
   uploading,
@@ -61,7 +80,7 @@ export function ChatInput({
     <div className="space-y-2">
       {uploadedFile && (
         <div className="flex items-center gap-2 px-3 py-2 bg-primary/8 border border-primary/20 rounded-xl text-sm">
-          <FileText className="h-4 w-4 text-primary shrink-0" />
+          <FileIcon type={uploadedFileType} className="h-4 w-4 text-primary shrink-0" />
           <span className="text-foreground truncate flex-1">{uploadedFile}</span>
           <Button
             variant="ghost"
@@ -78,7 +97,7 @@ export function ChatInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept="application/pdf"
+          accept={ACCEPTED}
           className="hidden"
           onChange={handleFileChange}
         />
@@ -93,7 +112,7 @@ export function ChatInput({
           )}
           disabled={disabled || uploading}
           onClick={() => fileInputRef.current?.click()}
-          title="Upload PDF"
+          title="Upload file (PDF, image, text, Word…)"
         >
           {uploading ? (
             <Loader2 className="h-4.5 w-4.5 animate-spin" />

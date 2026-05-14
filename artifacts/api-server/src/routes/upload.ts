@@ -14,6 +14,9 @@ const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse") as (
   buffer: Buffer
 ) => Promise<{ text: string }>;
+const mammoth = require("mammoth") as {
+  extractRawText: (opts: { buffer: Buffer }) => Promise<{ value: string }>;
+};
 
 const execFileAsync = promisify(execFile);
 
@@ -24,19 +27,70 @@ const client = new OpenAI({
   baseURL: "https://api.freemodel.dev/v1",
 });
 
+const ACCEPTED_TYPES: Record<string, string> = {
+  "application/pdf": "pdf",
+  "image/png": "image",
+  "image/jpeg": "image",
+  "image/jpg": "image",
+  "image/gif": "image",
+  "image/webp": "image",
+  "image/bmp": "image",
+  "text/plain": "text",
+  "text/markdown": "text",
+  "text/csv": "text",
+  "application/json": "text",
+  "application/xml": "text",
+  "text/xml": "text",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/msword": "docx",
+};
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === "application/pdf") {
+    if (ACCEPTED_TYPES[file.mimetype]) {
       cb(null, true);
     } else {
-      cb(new Error("Only PDF files are allowed"));
+      cb(new Error(`Unsupported file type: ${file.mimetype}`));
     }
   },
 });
 
 async function extractWithVision(
+  imageBuffer: Buffer,
+  mimeType: string,
+  prompt: string,
+  log: (msg: string) => void
+): Promise<string> {
+  log(`Sending image to vision model (${mimeType})`);
+  const b64 = imageBuffer.toString("base64");
+
+  const completion = await client.chat.completions.create({
+    model: "FRE-5.5",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          {
+            type: "image_url",
+            image_url: { url: `data:${mimeType};base64,${b64}`, detail: "high" as const },
+          },
+        ],
+      },
+    ],
+    max_tokens: 4096,
+  });
+
+  const raw = completion as unknown;
+  const data = typeof raw === "string"
+    ? JSON.parse(raw)
+    : (raw as { choices?: Array<{ message?: { content?: string } }> });
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+async function extractPdfWithVision(
   pdfBuffer: Buffer,
   log: (msg: string) => void
 ): Promise<string> {
@@ -46,27 +100,18 @@ async function extractWithVision(
 
   try {
     await writeFile(pdfPath, pdfBuffer);
-
-    // Convert PDF pages to PNG images (max 8 pages, 150 DPI)
     await execFileAsync("pdftoppm", [
-      "-r", "150",
-      "-png",
-      "-l", "8",
-      pdfPath,
-      join(workDir, "page"),
+      "-r", "150", "-png", "-l", "8",
+      pdfPath, join(workDir, "page"),
     ]);
 
     const files = (await readdir(workDir))
       .filter((f) => f.endsWith(".png"))
       .sort();
 
-    if (files.length === 0) {
-      throw new Error("No pages extracted from PDF");
-    }
-
+    if (files.length === 0) throw new Error("No pages extracted from PDF");
     log(`Extracted ${files.length} page(s) from PDF, sending to vision model`);
 
-    // Build vision message with all pages
     const imageContent: OpenAI.ChatCompletionContentPart[] = await Promise.all(
       files.map(async (f) => {
         const imgBuffer = await readFile(join(workDir, f));
@@ -96,13 +141,11 @@ async function extractWithVision(
     });
 
     const raw = completion as unknown;
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw as { choices?: Array<{ message?: { content?: string } }> };
+    const data = typeof raw === "string"
+      ? JSON.parse(raw)
+      : (raw as { choices?: Array<{ message?: { content?: string } }> });
     const extracted = data.choices?.[0]?.message?.content ?? "";
-
-    if (!extracted.trim()) {
-      throw new Error("Vision model returned empty content");
-    }
-
+    if (!extracted.trim()) throw new Error("Vision model returned empty content");
     return extracted;
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -116,55 +159,65 @@ router.post("/upload", upload.single("file"), async (req, res) => {
       return;
     }
 
-    const filename = req.file.originalname;
+    const { originalname: filename, mimetype, buffer } = req.file;
+    const fileKind = ACCEPTED_TYPES[mimetype] ?? "unknown";
     let text = "";
-    let method = "text";
+    let method = fileKind;
 
-    // Try text extraction first
-    try {
-      const parsed = await pdfParse(req.file.buffer);
-      text = parsed.text?.trim() ?? "";
-    } catch {
-      text = "";
-    }
+    if (fileKind === "text") {
+      text = buffer.toString("utf-8").trim();
+      req.log.info({ filename, charCount: text.length }, "Text file loaded");
 
-    // Fall back to vision OCR for image-based PDFs
-    if (text.length < 20) {
-      req.log.info({ filename }, "Text extraction failed, using vision OCR");
+    } else if (fileKind === "docx") {
+      const result = await mammoth.extractRawText({ buffer });
+      text = result.value.trim();
+      req.log.info({ filename, charCount: text.length }, "DOCX text extracted");
+
+    } else if (fileKind === "image") {
+      text = await extractWithVision(
+        buffer,
+        mimetype,
+        "Please describe this image in detail and extract any text visible in it. Be thorough and comprehensive.",
+        (msg) => req.log.info(msg)
+      );
       method = "vision";
+      req.log.info({ filename, charCount: text.length }, "Image described via vision");
+
+    } else if (fileKind === "pdf") {
+      // Try text extraction first
       try {
-        text = await extractWithVision(req.file.buffer, (msg) =>
-          req.log.info(msg)
-        );
-      } catch (visionErr) {
-        req.log.error({ visionErr }, "Vision OCR failed");
-        res.status(422).json({
-          error:
-            "Could not extract content from this PDF. Please try a different file.",
-        });
-        return;
+        const parsed = await pdfParse(buffer);
+        text = parsed.text?.trim() ?? "";
+      } catch {
+        text = "";
+      }
+      // Fall back to vision OCR for image-based PDFs
+      if (text.length < 20) {
+        req.log.info({ filename }, "Text extraction failed, using vision OCR");
+        method = "vision";
+        text = await extractPdfWithVision(buffer, (msg) => req.log.info(msg));
       }
     }
 
-    setContext(text, filename);
-    req.log.info({ filename, charCount: text.length, method }, "PDF context loaded");
+    if (!text.trim()) {
+      res.status(422).json({ error: "Could not extract any content from this file." });
+      return;
+    }
 
-    res.json({
-      success: true,
-      filename,
-      charCount: text.length,
-    });
+    setContext(text, filename);
+    req.log.info({ filename, charCount: text.length, method }, "Context loaded");
+
+    res.json({ success: true, filename, charCount: text.length });
   } catch (err: unknown) {
     req.log.error({ err }, "Upload error");
-    const message =
-      err instanceof Error ? err.message : "Internal server error";
+    const message = err instanceof Error ? err.message : "Internal server error";
     res.status(500).json({ error: message });
   }
 });
 
 router.post("/upload/clear", (req, res) => {
   clearContext();
-  req.log.info("PDF context cleared");
+  req.log.info("Context cleared");
   res.json({ success: true });
 });
 
