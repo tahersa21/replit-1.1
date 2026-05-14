@@ -8,6 +8,20 @@
 import * as zod from "zod";
 
 /**
+ * Upload a PDF document to use as context for the chatbot
+ * @summary Upload a PDF file
+ */
+export const UploadFileBody = zod.object({
+  file: zod.instanceof(File),
+});
+
+export const UploadFileResponse = zod.object({
+  success: zod.boolean(),
+  filename: zod.string(),
+  charCount: zod.number(),
+});
+
+/**
  * Returns server health status
  * @summary Health check
  */

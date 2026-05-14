@@ -1,6 +1,7 @@
 import { Router } from "express";
 import OpenAI from "openai";
 import { SendMessageBody } from "@workspace/api-zod";
+import { getContext } from "../context-store";
 
 const router = Router();
 
@@ -59,11 +60,18 @@ Compatible Tools:
 Website: freemodel.dev
 `.trim();
 
-const systemPrompt = `You are a helpful assistant specializing in the FreeModel AI platform. Answer questions based on the following documentation. If the answer is not found in the documentation, say so politely and try to help based on your general knowledge.
+function buildSystemPrompt(): string {
+  const uploaded = getContext();
+  const context = uploaded ?? FREEMODEL_CONTEXT;
+  const source = uploaded
+    ? "the uploaded document"
+    : "the FreeModel platform documentation";
+  return `You are a helpful assistant. Answer questions based on the following ${source}. If the answer is not found in the provided context, say so politely and try to help based on your general knowledge.
 
 ---
 
-${FREEMODEL_CONTEXT}`;
+${context}`;
+}
 
 router.post("/chat", async (req, res) => {
   try {
@@ -78,7 +86,7 @@ router.post("/chat", async (req, res) => {
     const completion = await client.chat.completions.create({
       model,
       messages: [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: buildSystemPrompt() },
         ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
       ],
       max_tokens: 1024,

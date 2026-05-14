@@ -24,10 +24,11 @@ type ModelId = (typeof MODELS)[number]["id"];
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelId>("FRE-5.5");
+  const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const { toast } = useToast();
 
   const sendMessageMutation = useSendMessage();
-
   const currentModel = MODELS.find((m) => m.id === selectedModel)!;
 
   const handleSendMessage = (content: string) => {
@@ -35,7 +36,6 @@ export default function ChatPage() {
 
     const newMessage: ChatMessage = { role: "user", content };
     const newMessages = [...messages, newMessage];
-
     setMessages(newMessages);
 
     sendMessageMutation.mutate(
@@ -57,6 +57,55 @@ export default function ChatPage() {
     );
   };
 
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast({
+          title: "فشل رفع الملف",
+          description: data.error ?? "حدث خطأ غير متوقع.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setUploadedFile(data.filename);
+      setMessages([]);
+      toast({
+        title: "تم رفع الملف",
+        description: `تم تحميل "${data.filename}" بنجاح (${(data.charCount as number).toLocaleString()} حرف).`,
+      });
+    } catch {
+      toast({
+        title: "فشل رفع الملف",
+        description: "تعذّر الاتصال بالخادم.",
+        variant: "destructive",
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleClearFile = async () => {
+    try {
+      await fetch("/api/upload/clear", { method: "POST" });
+    } catch {
+      // silently ignore
+    }
+    setUploadedFile(null);
+    setMessages([]);
+  };
+
   return (
     <div className="flex flex-col h-[100dvh] bg-background text-foreground overflow-hidden">
       <header className="flex-none px-6 py-4 border-b border-border/50 bg-background/80 backdrop-blur-md sticky top-0 z-10">
@@ -67,7 +116,9 @@ export default function ChatPage() {
             </div>
             <div>
               <h1 className="font-semibold text-lg leading-tight">Knowledge Assistant</h1>
-              <p className="text-sm text-muted-foreground leading-tight">Ask questions based on your document</p>
+              <p className="text-sm text-muted-foreground leading-tight">
+                {uploadedFile ? uploadedFile : "Ask questions based on your document"}
+              </p>
             </div>
           </div>
 
@@ -123,7 +174,11 @@ export default function ChatPage() {
         <div className="max-w-3xl mx-auto">
           <ChatInput
             onSend={handleSendMessage}
+            onUpload={handleUpload}
+            uploadedFile={uploadedFile}
+            onClearFile={handleClearFile}
             disabled={sendMessageMutation.isPending}
+            uploading={uploading}
           />
           <p className="text-xs text-center text-muted-foreground mt-3">
             AI can make mistakes. Consider verifying important information.

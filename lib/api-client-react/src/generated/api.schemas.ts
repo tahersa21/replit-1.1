@@ -39,6 +39,16 @@ export interface ChatResponse {
   message: ChatMessage;
 }
 
+export interface UploadResponse {
+  success: boolean;
+  filename: string;
+  charCount: number;
+}
+
 export interface ErrorResponse {
   error: string;
 }
+
+export type UploadFileBody = {
+  file: Blob;
+};

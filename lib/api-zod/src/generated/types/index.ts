@@ -13,3 +13,5 @@ export * from "./chatRequestModel";
 export * from "./chatResponse";
 export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./uploadFileBody";
+export * from "./uploadResponse";

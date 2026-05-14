@@ -13,6 +13,49 @@ tags:
   - name: chat
     description: Chat operations
 paths:
+  /upload:
+    post:
+      operationId: uploadFile
+      tags: [chat]
+      summary: Upload a PDF file
+      description: Upload a PDF document to use as context for the chatbot
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required:
+                - file
+      responses:
+        "200":
+          description: File uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Cannot extract text from PDF
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /healthz:
     get:
       operationId: healthCheck
@@ -91,6 +134,19 @@ components:
           $ref: "#/components/schemas/ChatMessage"
       required:
         - message
+    UploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        filename:
+          type: string
+        charCount:
+          type: number
+      required:
+        - success
+        - filename
+        - charCount
     ErrorResponse:
       type: object
       properties:
