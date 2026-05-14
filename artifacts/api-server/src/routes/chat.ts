@@ -73,10 +73,10 @@ router.post("/chat", async (req, res) => {
       return;
     }
 
-    const { messages } = parsed.data;
+    const { messages, model = "FRE-5.5" } = parsed.data;
 
     const completion = await client.chat.completions.create({
-      model: "FRE-5.5",
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),

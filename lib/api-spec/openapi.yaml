@@ -78,6 +78,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ChatMessage"
+        model:
+          type: string
+          enum: [FRE-5.4, FRE-5.5]
+          default: FRE-5.5
       required:
         - messages
     ChatResponse:

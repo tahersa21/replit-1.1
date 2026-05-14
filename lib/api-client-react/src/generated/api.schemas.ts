@@ -22,8 +22,17 @@ export interface ChatMessage {
   content: string;
 }
 
+export type ChatRequestModel =
+  (typeof ChatRequestModel)[keyof typeof ChatRequestModel];
+
+export const ChatRequestModel = {
+  "FRE-54": "FRE-5.4",
+  "FRE-55": "FRE-5.5",
+} as const;
+
 export interface ChatRequest {
   messages: ChatMessage[];
+  model?: ChatRequestModel;
 }
 
 export interface ChatResponse {
