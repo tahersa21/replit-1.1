@@ -14,3 +14,23 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Send a message to the chatbot and get a response based on PDF context
+ * @summary Send a chat message
+ */
+export const SendMessageBody = zod.object({
+  messages: zod.array(
+    zod.object({
+      role: zod.enum(["user", "assistant"]),
+      content: zod.string(),
+    }),
+  ),
+});
+
+export const SendMessageResponse = zod.object({
+  message: zod.object({
+    role: zod.enum(["user", "assistant"]),
+    content: zod.string(),
+  }),
+});
