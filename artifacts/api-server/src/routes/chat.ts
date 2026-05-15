@@ -35,123 +35,144 @@ function isClaudeModel(model: string): boolean {
   return model.startsWith("claude-");
 }
 
-function httpsPost(
-  hostname: string,
-  path: string,
-  headers: Record<string, string>,
-  body: string,
-  timeoutMs = 120_000
-): Promise<{ statusCode: number; body: string }> {
+function sseWrite(res: import("express").Response, data: string): void {
+  res.write(`data: ${data}\n\n`);
+}
+
+function startSSE(res: import("express").Response): void {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+}
+
+async function streamAnthropicToSSE(
+  res: import("express").Response,
+  model: string,
+  systemPrompt: string,
+  messages: { role: string; content: string }[]
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const bodyBuffer = Buffer.from(body, "utf8");
+    const bodyStr = JSON.stringify({
+      model,
+      max_tokens: 4096,
+      stream: true,
+      system: systemPrompt,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    });
+
+    const bodyBuffer = Buffer.from(bodyStr, "utf8");
+
     const req = https.request(
       {
-        hostname,
-        path,
+        hostname: "cc.freemodel.dev",
+        path: "/v1/messages",
         method: "POST",
         headers: {
-          ...headers,
+          "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
           "Content-Length": bodyBuffer.length,
         },
-        timeout: timeoutMs,
+        timeout: 120_000,
       },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          resolve({
-            statusCode: res.statusCode ?? 0,
-            body: Buffer.concat(chunks).toString("utf8"),
-          });
+      (upstream) => {
+        let buffer = "";
+
+        upstream.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf8");
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr || jsonStr === "[DONE]") continue;
+
+            try {
+              const event = JSON.parse(jsonStr) as {
+                type: string;
+                delta?: { type: string; text?: string };
+                error?: { message: string };
+              };
+
+              if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+                sseWrite(res, JSON.stringify({ text: event.delta.text }));
+              } else if (event.type === "message_stop") {
+                sseWrite(res, "[DONE]");
+              } else if (event.type === "error") {
+                sseWrite(res, JSON.stringify({ error: event.error?.message ?? "Anthropic stream error" }));
+              }
+            } catch {
+              // ignore malformed lines
+            }
+          }
         });
-        res.on("error", reject);
+
+        upstream.on("end", () => resolve());
+        upstream.on("error", reject);
       }
     );
-    req.on("timeout", () => {
-      req.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
-    });
+
+    req.on("timeout", () => req.destroy(new Error("Anthropic stream timed out")));
     req.on("error", reject);
     req.write(bodyBuffer);
     req.end();
   });
 }
 
-async function callAnthropicAPI(
+async function streamOpenAIToSSE(
+  res: import("express").Response,
   model: string,
   systemPrompt: string,
   messages: { role: string; content: string }[]
-): Promise<string> {
-  const bodyStr = JSON.stringify({
+): Promise<void> {
+  const stream = await openaiClient.chat.completions.create({
     model,
-    max_tokens: 4096,
-    system: systemPrompt,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    stream: true,
+    messages: [
+      { role: "system", content: systemPrompt },
+      ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ],
+    max_tokens: 2048,
   });
 
-  const { statusCode, body } = await httpsPost(
-    "cc.freemodel.dev",
-    "/v1/messages",
-    {
-      "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    bodyStr
-  );
-
-  const data = JSON.parse(body) as {
-    content?: { type: string; text: string }[];
-    error?: { message: string };
-  };
-
-  if (statusCode >= 400) {
-    throw new Error(data.error?.message ?? `Anthropic API error (${statusCode})`);
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content;
+    if (text) {
+      sseWrite(res, JSON.stringify({ text }));
+    }
+    if (chunk.choices[0]?.finish_reason === "stop") {
+      sseWrite(res, "[DONE]");
+    }
   }
-
-  const textBlock = data.content?.find((b) => b.type === "text");
-  return textBlock?.text ?? "No response";
 }
 
-router.post("/chat", async (req, res) => {
+router.post("/chat/stream", async (req, res) => {
+  const parsed = SendMessageBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body" });
+    return;
+  }
+
+  const { messages, model = "gpt-5.5" } = parsed.data;
+  const systemPrompt = buildSystemPrompt();
+
+  startSSE(res);
+
   try {
-    const parsed = SendMessageBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid request body" });
-      return;
-    }
-
-    const { messages, model = "gpt-5.5" } = parsed.data;
-    const systemPrompt = buildSystemPrompt();
-
-    let reply: string;
-
     if (isClaudeModel(model)) {
-      reply = await callAnthropicAPI(model, systemPrompt, messages);
+      await streamAnthropicToSSE(res, model, systemPrompt, messages);
     } else {
-      const completion = await openaiClient.chat.completions.create({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-        ],
-        max_tokens: 1024,
-      });
-
-      const completionData =
-        typeof completion === "string" ? JSON.parse(completion) : completion;
-      reply = completionData.choices?.[0]?.message?.content ?? "No response";
+      await streamOpenAIToSSE(res, model, systemPrompt, messages);
     }
-
-    res.json({
-      message: {
-        role: "assistant",
-        content: reply,
-      },
-    });
   } catch (err: unknown) {
-    req.log.error({ err }, "Chat error");
+    req.log.error({ err }, "Stream chat error");
     const message = err instanceof Error ? err.message : "Internal server error";
-    res.status(500).json({ error: message });
+    sseWrite(res, JSON.stringify({ error: message }));
+  } finally {
+    res.end();
   }
 });
 

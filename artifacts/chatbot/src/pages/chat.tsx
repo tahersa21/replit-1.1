@@ -1,6 +1,5 @@
-import React, { useState } from "react";
-import { useSendMessage } from "@workspace/api-client-react";
-import type { ChatMessage, ChatRequestModel } from "@workspace/api-client-react";
+import React, { useState, useRef } from "react";
+import type { ChatMessage } from "@workspace/api-client-react";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { EmptyState } from "@/components/chat/empty-state";
@@ -40,43 +39,100 @@ const MODEL_GROUPS: ModelGroup[] = [
 ];
 
 const MODELS: ModelEntry[] = MODEL_GROUPS.flatMap((g) => g.models);
-type ModelId = string;
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [selectedModel, setSelectedModel] = useState<ModelId>("gpt-5.5");
+  const [selectedModel, setSelectedModel] = useState("gpt-5.5");
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
   const [uploadedFileType, setUploadedFileType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
-  const sendMessageMutation = useSendMessage();
-  const currentModel = MODELS.find((m) => m.id === selectedModel)!;
+  const currentModel = MODELS.find((m) => m.id === selectedModel) ?? MODELS[0];
 
-  const handleSendMessage = (content: string) => {
-    if (!content.trim()) return;
+  const handleSendMessage = async (content: string) => {
+    if (!content.trim() || isStreaming) return;
 
-    const newMessage: ChatMessage = { role: "user", content };
-    const newMessages = [...messages, newMessage];
+    const userMsg: ChatMessage = { role: "user", content };
+    const newMessages = [...messages, userMsg];
     setMessages(newMessages);
+    setIsStreaming(true);
 
-    sendMessageMutation.mutate(
-      { data: { messages: newMessages, model: selectedModel as ChatRequestModel } },
-      {
-        onSuccess: (response) => {
-          if (response?.message) {
-            setMessages((prev) => [...prev, response.message]);
-          }
-        },
-        onError: () => {
-          toast({
-            title: "فشل إرسال الرسالة",
-            description: "حدث خطأ في الاتصال بالمساعد. حاول مرة أخرى.",
-            variant: "destructive",
-          });
-        },
+    const assistantMsg: ChatMessage = { role: "assistant", content: "" };
+    setMessages((prev) => [...prev, assistantMsg]);
+
+    abortRef.current = new AbortController();
+
+    try {
+      const response = await fetch("/api/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, model: selectedModel }),
+        signal: abortRef.current.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error("Stream request failed");
       }
-    );
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (!data || data === "[DONE]") continue;
+
+          try {
+            const parsed = JSON.parse(data) as { text?: string; error?: string };
+            if (parsed.error) {
+              toast({
+                title: "خطأ في المساعد",
+                description: parsed.error,
+                variant: "destructive",
+              });
+              break;
+            }
+            if (parsed.text) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = {
+                  ...last,
+                  content: last.content + parsed.text,
+                };
+                return updated;
+              });
+            }
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        toast({
+          title: "فشل إرسال الرسالة",
+          description: "حدث خطأ في الاتصال بالمساعد. حاول مرة أخرى.",
+          variant: "destructive",
+        });
+        setMessages((prev) => prev.slice(0, -1));
+      }
+    } finally {
+      setIsStreaming(false);
+      abortRef.current = null;
+    }
   };
 
   const handleUpload = async (file: File) => {
@@ -153,7 +209,12 @@ export default function ChatPage() {
                 size="sm"
                 className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all"
               >
-                <span className={`h-2 w-2 rounded-full animate-pulse ${MODEL_GROUPS.find(g => g.models.some(m => m.id === selectedModel))?.color ?? "bg-emerald-500"}`} />
+                <span
+                  className={`h-2 w-2 rounded-full animate-pulse ${
+                    MODEL_GROUPS.find((g) => g.models.some((m) => m.id === selectedModel))?.color ??
+                    "bg-emerald-500"
+                  }`}
+                />
                 <span className="font-medium text-sm">{currentModel.label}</span>
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               </Button>
@@ -169,7 +230,7 @@ export default function ChatPage() {
                   {group.models.map((model) => (
                     <DropdownMenuItem
                       key={model.id}
-                      onClick={() => setSelectedModel(model.id as ModelId)}
+                      onClick={() => setSelectedModel(model.id)}
                       className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
                     >
                       <div>
@@ -195,10 +256,7 @@ export default function ChatPage() {
               <EmptyState />
             </div>
           ) : (
-            <ChatMessageList
-              messages={messages}
-              isTyping={sendMessageMutation.isPending}
-            />
+            <ChatMessageList messages={messages} isTyping={isStreaming && messages[messages.length - 1]?.role === "assistant" && messages[messages.length - 1]?.content === ""} />
           )}
         </div>
       </main>
@@ -211,7 +269,7 @@ export default function ChatPage() {
             uploadedFile={uploadedFile}
             uploadedFileType={uploadedFileType}
             onClearFile={handleClearFile}
-            disabled={sendMessageMutation.isPending}
+            disabled={isStreaming}
             uploading={uploading}
           />
           <p className="text-xs text-center text-muted-foreground mt-3">
