@@ -64,6 +64,13 @@ async function streamAnthropicToSSE(
 
     const bodyBuffer = Buffer.from(bodyStr, "utf8");
 
+    // Send SSE comment heartbeats to keep the proxy connection alive
+    const heartbeat = setInterval(() => {
+      try { res.write(": heartbeat\n\n"); } catch { /* ignore */ }
+    }, 10_000);
+
+    const cleanup = () => clearInterval(heartbeat);
+
     const req = https.request(
       {
         hostname: "cc.freemodel.dev",
@@ -75,7 +82,7 @@ async function streamAnthropicToSSE(
           "Content-Type": "application/json",
           "Content-Length": bodyBuffer.length,
         },
-        timeout: 120_000,
+        // No socket-level timeout — we keep the connection via heartbeat
       },
       (upstream) => {
         let buffer = "";
@@ -110,13 +117,20 @@ async function streamAnthropicToSSE(
           }
         });
 
-        upstream.on("end", () => resolve());
-        upstream.on("error", reject);
+        upstream.on("end", () => { cleanup(); resolve(); });
+        upstream.on("error", (err) => { cleanup(); reject(err); });
       }
     );
 
-    req.on("timeout", () => req.destroy(new Error("Anthropic stream timed out")));
-    req.on("error", reject);
+    // Guard against total hang: 5 minutes hard limit via a manual timer
+    const hardTimeout = setTimeout(() => {
+      cleanup();
+      req.destroy(new Error("Anthropic stream exceeded 5-minute limit"));
+    }, 300_000);
+
+    req.on("error", (err) => { cleanup(); clearTimeout(hardTimeout); reject(err); });
+    req.on("close", () => clearTimeout(hardTimeout));
+
     req.write(bodyBuffer);
     req.end();
   });
