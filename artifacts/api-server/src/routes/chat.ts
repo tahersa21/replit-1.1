@@ -115,7 +115,7 @@ async function streamAnthropicFreeModel(
   });
 }
 
-// ── OpenAI-compatible streaming (FreeModel GPT + all Xynera models) ──────────
+// ── OpenAI-compatible streaming (FreeModel GPT + Xynera GPT/Claude) ──────────
 async function streamOpenAI(
   res: import("express").Response,
   baseURL: string,
@@ -142,6 +142,35 @@ async function streamOpenAI(
   }
 }
 
+// ── Non-streaming fallback for Gemini on Xynera (streaming returns HTTP 500) ─
+async function fetchGeminiXynera(
+  res: import("express").Response,
+  apiKey: string,
+  model: string,
+  systemPrompt: string,
+  messages: { role: string; content: string }[]
+): Promise<void> {
+  const client = new OpenAI({ apiKey, baseURL: "https://www.xynera.vip/v1" });
+  const completion = await client.chat.completions.create({
+    model,
+    stream: false,
+    messages: [
+      { role: "system", content: systemPrompt },
+      ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ],
+    max_tokens: 2048,
+  });
+  const text = completion.choices[0]?.message?.content ?? "";
+  if (text) {
+    // Emit in chunks to simulate streaming feel
+    const chunkSize = 80;
+    for (let i = 0; i < text.length; i += chunkSize) {
+      sseWrite(res, JSON.stringify({ text: text.slice(i, i + chunkSize) }));
+    }
+  }
+  sseWrite(res, "[DONE]");
+}
+
 router.post("/chat/stream", async (req, res) => {
   const parsed = SendMessageBody.safeParse(req.body);
   if (!parsed.success) {
@@ -156,9 +185,13 @@ router.post("/chat/stream", async (req, res) => {
 
   try {
     if (provider === "xynera") {
-      // Xynera: all models (GPT, Claude, Gemini) via OpenAI-compatible endpoint
       const apiKey = process.env.XYNERA_API_KEY ?? "";
-      await streamOpenAI(res, "https://www.xynera.vip/v1", apiKey, model, systemPrompt, messages);
+      // Gemini models don't support streaming on Xynera (returns HTTP 500) → use non-streaming fallback
+      if (model.startsWith("gemini-")) {
+        await fetchGeminiXynera(res, apiKey, model, systemPrompt, messages);
+      } else {
+        await streamOpenAI(res, "https://www.xynera.vip/v1", apiKey, model, systemPrompt, messages);
+      }
     } else {
       // FreeModel: Claude → Anthropic endpoint, GPT → OpenAI endpoint
       const apiKey = process.env.FREEMODEL_API_KEY ?? "";
