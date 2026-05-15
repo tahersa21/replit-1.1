@@ -19,45 +19,11 @@ Anthropic models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001
 Website: freemodel.dev
 `.trim();
 
-type ProviderConfig = {
-  openaiBaseURL: string;
-  anthropicHostname: string;
-  anthropicPath: string;
-  authHeader: (key: string) => Record<string, string>;
-  openaiApiKey: string;
-};
-
-function getProviderConfig(provider: string): ProviderConfig {
-  if (provider === "xynera") {
-    const key = process.env.XYNERA_API_KEY ?? "";
-    return {
-      openaiBaseURL: "https://www.xynera.vip/v1",
-      anthropicHostname: "www.xynera.vip",
-      anthropicPath: "/v1/messages",
-      authHeader: (k) => ({ Authorization: `Bearer ${k}` }),
-      openaiApiKey: key,
-    };
-  }
-  // default: freemodel
-  const key = process.env.FREEMODEL_API_KEY ?? "";
-  return {
-    openaiBaseURL: "https://api.freemodel.dev/v1",
-    anthropicHostname: "cc.freemodel.dev",
-    anthropicPath: "/v1/messages",
-    authHeader: (k) => ({ "x-api-key": k, "anthropic-version": "2023-06-01" }),
-    openaiApiKey: key,
-  };
-}
-
 function buildSystemPrompt(): string {
   const uploaded = getContext();
   const context = uploaded ?? DEFAULT_CONTEXT;
   const source = uploaded ? "the uploaded document" : "the FreeModel platform documentation";
   return `You are a helpful assistant. Answer questions based on the following ${source}. If the answer is not found in the provided context, say so politely and try to help based on your general knowledge.\n\n---\n\n${context}`;
-}
-
-function isClaudeModel(model: string): boolean {
-  return model.startsWith("claude-");
 }
 
 function sseWrite(res: import("express").Response, data: string): void {
@@ -72,9 +38,9 @@ function startSSE(res: import("express").Response): void {
   res.flushHeaders();
 }
 
-async function streamAnthropicToSSE(
+// ── Anthropic streaming via node:https (FreeModel only) ─────────────────────
+async function streamAnthropicFreeModel(
   res: import("express").Response,
-  cfg: ProviderConfig,
   apiKey: string,
   model: string,
   systemPrompt: string,
@@ -97,11 +63,12 @@ async function streamAnthropicToSSE(
 
     const req = https.request(
       {
-        hostname: cfg.anthropicHostname,
-        path: cfg.anthropicPath,
+        hostname: "cc.freemodel.dev",
+        path: "/v1/messages",
         method: "POST",
         headers: {
-          ...cfg.authHeader(apiKey),
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
           "Content-Type": "application/json",
           "Content-Length": bodyBuffer.length,
         },
@@ -141,7 +108,6 @@ async function streamAnthropicToSSE(
       cleanup();
       req.destroy(new Error("Anthropic stream exceeded 5-minute limit"));
     }, 300_000);
-
     req.on("error", (err) => { cleanup(); clearTimeout(hardTimeout); reject(err); });
     req.on("close", () => clearTimeout(hardTimeout));
     req.write(bodyBuffer);
@@ -149,14 +115,16 @@ async function streamAnthropicToSSE(
   });
 }
 
-async function streamOpenAIToSSE(
+// ── OpenAI-compatible streaming (FreeModel GPT + all Xynera models) ──────────
+async function streamOpenAI(
   res: import("express").Response,
-  cfg: ProviderConfig,
+  baseURL: string,
+  apiKey: string,
   model: string,
   systemPrompt: string,
   messages: { role: string; content: string }[]
 ): Promise<void> {
-  const client = new OpenAI({ apiKey: cfg.openaiApiKey, baseURL: cfg.openaiBaseURL });
+  const client = new OpenAI({ apiKey, baseURL });
   const stream = await client.chat.completions.create({
     model,
     stream: true,
@@ -182,19 +150,23 @@ router.post("/chat/stream", async (req, res) => {
   }
 
   const { messages, model = "gpt-5.5", provider = "freemodel" } = parsed.data;
-  const cfg = getProviderConfig(provider);
-  const apiKey = provider === "xynera"
-    ? (process.env.XYNERA_API_KEY ?? "")
-    : (process.env.FREEMODEL_API_KEY ?? "");
   const systemPrompt = buildSystemPrompt();
 
   startSSE(res);
 
   try {
-    if (isClaudeModel(model)) {
-      await streamAnthropicToSSE(res, cfg, apiKey, model, systemPrompt, messages);
+    if (provider === "xynera") {
+      // Xynera: all models (GPT, Claude, Gemini) via OpenAI-compatible endpoint
+      const apiKey = process.env.XYNERA_API_KEY ?? "";
+      await streamOpenAI(res, "https://www.xynera.vip/v1", apiKey, model, systemPrompt, messages);
     } else {
-      await streamOpenAIToSSE(res, cfg, model, systemPrompt, messages);
+      // FreeModel: Claude → Anthropic endpoint, GPT → OpenAI endpoint
+      const apiKey = process.env.FREEMODEL_API_KEY ?? "";
+      if (model.startsWith("claude-")) {
+        await streamAnthropicFreeModel(res, apiKey, model, systemPrompt, messages);
+      } else {
+        await streamOpenAI(res, "https://api.freemodel.dev/v1", apiKey, model, systemPrompt, messages);
+      }
     }
   } catch (err: unknown) {
     req.log.error({ err }, "Stream chat error");

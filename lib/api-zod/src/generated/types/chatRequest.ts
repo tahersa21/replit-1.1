@@ -6,11 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ChatMessage } from "./chatMessage";
-import type { ChatRequestModel } from "./chatRequestModel";
 import type { ChatRequestProvider } from "./chatRequestProvider";
 
 export interface ChatRequest {
   messages: ChatMessage[];
-  model?: ChatRequestModel;
+  model?: string;
   provider?: ChatRequestProvider;
 }

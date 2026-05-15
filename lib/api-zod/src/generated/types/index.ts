@@ -9,7 +9,6 @@
 export * from "./chatMessage";
 export * from "./chatMessageRole";
 export * from "./chatRequest";
-export * from "./chatRequestModel";
 export * from "./chatRequestProvider";
 export * from "./chatResponse";
 export * from "./errorResponse";

@@ -22,19 +22,6 @@ export interface ChatMessage {
   content: string;
 }
 
-export type ChatRequestModel =
-  (typeof ChatRequestModel)[keyof typeof ChatRequestModel];
-
-export const ChatRequestModel = {
-  "gpt-55": "gpt-5.5",
-  "gpt-54": "gpt-5.4",
-  "gpt-54-mini": "gpt-5.4-mini",
-  "gpt-53-codex": "gpt-5.3-codex",
-  "claude-opus-4-7": "claude-opus-4-7",
-  "claude-sonnet-4-6": "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
-} as const;
-
 export type ChatRequestProvider =
   (typeof ChatRequestProvider)[keyof typeof ChatRequestProvider];
 
@@ -45,7 +32,7 @@ export const ChatRequestProvider = {
 
 export interface ChatRequest {
   messages: ChatMessage[];
-  model?: ChatRequestModel;
+  model?: string;
   provider?: ChatRequestProvider;
 }
 
