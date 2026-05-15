@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import type { ChatMessage as ChatMessageType } from "@workspace/api-client-react/src/generated/api.schemas";
+import type { ChatMessage as ChatMessageType } from "@workspace/api-client-react";
 import { cn } from "@/lib/utils";
 import { User, Sparkles } from "lucide-react";
 

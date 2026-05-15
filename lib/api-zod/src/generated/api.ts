@@ -43,7 +43,15 @@ export const SendMessageBody = zod.object({
     }),
   ),
   model: zod
-    .enum(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"])
+    .enum([
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5-20251001",
+    ])
     .default(sendMessageBodyModelDefault),
 });
 

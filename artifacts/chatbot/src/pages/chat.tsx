@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useSendMessage } from "@workspace/api-client-react";
-import type { ChatMessage } from "@workspace/api-client-react/src/generated/api.schemas";
+import type { ChatMessage, ChatRequestModel } from "@workspace/api-client-react";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { EmptyState } from "@/components/chat/empty-state";
@@ -14,14 +14,33 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 
-const MODELS = [
-  { id: "gpt-5.5", label: "gpt-5.5", description: "أحدث إصدار" },
-  { id: "gpt-5.4", label: "gpt-5.4", description: "إصدار مستقر" },
-  { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "أسرع وأخف" },
-  { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "متخصص بالكود" },
-] as const;
+type ModelEntry = { id: string; label: string; description: string };
+type ModelGroup = { group: string; color: string; models: ModelEntry[] };
 
-type ModelId = (typeof MODELS)[number]["id"];
+const MODEL_GROUPS: ModelGroup[] = [
+  {
+    group: "FreeModel",
+    color: "bg-emerald-500",
+    models: [
+      { id: "gpt-5.5", label: "gpt-5.5", description: "أحدث إصدار" },
+      { id: "gpt-5.4", label: "gpt-5.4", description: "إصدار مستقر" },
+      { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "أسرع وأخف" },
+      { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "متخصص بالكود" },
+    ],
+  },
+  {
+    group: "Anthropic",
+    color: "bg-orange-400",
+    models: [
+      { id: "claude-opus-4-7", label: "Claude Opus 4.7", description: "الأقوى" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", description: "متوازن" },
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", description: "الأسرع" },
+    ],
+  },
+];
+
+const MODELS: ModelEntry[] = MODEL_GROUPS.flatMap((g) => g.models);
+type ModelId = string;
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -42,7 +61,7 @@ export default function ChatPage() {
     setMessages(newMessages);
 
     sendMessageMutation.mutate(
-      { data: { messages: newMessages, model: selectedModel } },
+      { data: { messages: newMessages, model: selectedModel as ChatRequestModel } },
       {
         onSuccess: (response) => {
           if (response?.message) {
@@ -134,26 +153,35 @@ export default function ChatPage() {
                 size="sm"
                 className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all"
               >
-                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className={`h-2 w-2 rounded-full animate-pulse ${MODEL_GROUPS.find(g => g.models.some(m => m.id === selectedModel))?.color ?? "bg-emerald-500"}`} />
                 <span className="font-medium text-sm">{currentModel.label}</span>
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44 rounded-xl">
-              {MODELS.map((model) => (
-                <DropdownMenuItem
-                  key={model.id}
-                  onClick={() => setSelectedModel(model.id)}
-                  className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
-                >
-                  <div>
-                    <p className="font-medium text-sm">{model.label}</p>
-                    <p className="text-xs text-muted-foreground">{model.description}</p>
-                  </div>
-                  {selectedModel === model.id && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  )}
-                </DropdownMenuItem>
+            <DropdownMenuContent align="end" className="w-52 rounded-xl p-1">
+              {MODEL_GROUPS.map((group, gi) => (
+                <div key={group.group}>
+                  {gi > 0 && <div className="my-1 border-t border-border/40" />}
+                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <span className={`h-1.5 w-1.5 rounded-full ${group.color}`} />
+                    {group.group}
+                  </p>
+                  {group.models.map((model) => (
+                    <DropdownMenuItem
+                      key={model.id}
+                      onClick={() => setSelectedModel(model.id as ModelId)}
+                      className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
+                    >
+                      <div>
+                        <p className="font-medium text-sm">{model.label}</p>
+                        <p className="text-xs text-muted-foreground">{model.description}</p>
+                      </div>
+                      {selectedModel === model.id && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </div>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
