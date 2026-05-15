@@ -67,7 +67,7 @@ async function extractWithVision(
   const b64 = imageBuffer.toString("base64");
 
   const completion = await client.chat.completions.create({
-    model: "FRE-5.5",
+    model: "gpt-5.5",
     messages: [
       {
         role: "user",
@@ -124,7 +124,7 @@ async function extractPdfWithVision(
     );
 
     const completion = await client.chat.completions.create({
-      model: "FRE-5.5",
+      model: "gpt-5.5",
       messages: [
         {
           role: "user",

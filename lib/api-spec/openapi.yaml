@@ -123,8 +123,8 @@ components:
             $ref: "#/components/schemas/ChatMessage"
         model:
           type: string
-          enum: [FRE-5.4, FRE-5.5]
-          default: FRE-5.5
+          enum: [gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex]
+          default: gpt-5.5
       required:
         - messages
     ChatResponse:

@@ -15,15 +15,17 @@ import {
 import { Button } from "@/components/ui/button";
 
 const MODELS = [
-  { id: "FRE-5.5", label: "FRE-5.5", description: "أحدث إصدار" },
-  { id: "FRE-5.4", label: "FRE-5.4", description: "إصدار مستقر" },
+  { id: "gpt-5.5", label: "gpt-5.5", description: "أحدث إصدار" },
+  { id: "gpt-5.4", label: "gpt-5.4", description: "إصدار مستقر" },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "أسرع وأخف" },
+  { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "متخصص بالكود" },
 ] as const;
 
 type ModelId = (typeof MODELS)[number]["id"];
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [selectedModel, setSelectedModel] = useState<ModelId>("FRE-5.5");
+  const [selectedModel, setSelectedModel] = useState<ModelId>("gpt-5.5");
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
   const [uploadedFileType, setUploadedFileType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);

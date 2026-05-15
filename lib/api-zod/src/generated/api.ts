@@ -33,7 +33,7 @@ export const HealthCheckResponse = zod.object({
  * Send a message to the chatbot and get a response based on PDF context
  * @summary Send a chat message
  */
-export const sendMessageBodyModelDefault = `FRE-5.5`;
+export const sendMessageBodyModelDefault = `gpt-5.5`;
 
 export const SendMessageBody = zod.object({
   messages: zod.array(
@@ -42,7 +42,9 @@ export const SendMessageBody = zod.object({
       content: zod.string(),
     }),
   ),
-  model: zod.enum(["FRE-5.4", "FRE-5.5"]).default(sendMessageBodyModelDefault),
+  model: zod
+    .enum(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"])
+    .default(sendMessageBodyModelDefault),
 });
 
 export const SendMessageResponse = zod.object({

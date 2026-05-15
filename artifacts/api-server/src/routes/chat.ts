@@ -81,7 +81,7 @@ router.post("/chat", async (req, res) => {
       return;
     }
 
-    const { messages, model = "FRE-5.5" } = parsed.data;
+    const { messages, model = "gpt-5.5" } = parsed.data;
 
     const completion = await client.chat.completions.create({
       model,

@@ -26,8 +26,10 @@ export type ChatRequestModel =
   (typeof ChatRequestModel)[keyof typeof ChatRequestModel];
 
 export const ChatRequestModel = {
-  "FRE-54": "FRE-5.4",
-  "FRE-55": "FRE-5.5",
+  "gpt-55": "gpt-5.5",
+  "gpt-54": "gpt-5.4",
+  "gpt-54-mini": "gpt-5.4-mini",
+  "gpt-53-codex": "gpt-5.3-codex",
 } as const;
 
 export interface ChatRequest {
