@@ -1,5 +1,6 @@
 import { Router } from "express";
 import OpenAI from "openai";
+import https from "https";
 import { SendMessageBody } from "@workspace/api-zod";
 import { getContext } from "../context-store";
 
@@ -9,8 +10,6 @@ const openaiClient = new OpenAI({
   apiKey: process.env.FREEMODEL_API_KEY,
   baseURL: "https://api.freemodel.dev/v1",
 });
-
-const ANTHROPIC_BASE_URL = "https://cc.freemodel.dev";
 
 const DEFAULT_CONTEXT = `
 FreeModel Platform Documentation
@@ -36,36 +35,77 @@ function isClaudeModel(model: string): boolean {
   return model.startsWith("claude-");
 }
 
+function httpsPost(
+  hostname: string,
+  path: string,
+  headers: Record<string, string>,
+  body: string,
+  timeoutMs = 120_000
+): Promise<{ statusCode: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const bodyBuffer = Buffer.from(body, "utf8");
+    const req = https.request(
+      {
+        hostname,
+        path,
+        method: "POST",
+        headers: {
+          ...headers,
+          "Content-Length": bodyBuffer.length,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+        res.on("error", reject);
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+    });
+    req.on("error", reject);
+    req.write(bodyBuffer);
+    req.end();
+  });
+}
+
 async function callAnthropicAPI(
   model: string,
   systemPrompt: string,
   messages: { role: string; content: string }[]
 ): Promise<string> {
-  const response = await fetch(`${ANTHROPIC_BASE_URL}/v1/messages`, {
-    method: "POST",
-    headers: {
+  const bodyStr = JSON.stringify({
+    model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+  });
+
+  const { statusCode, body } = await httpsPost(
+    "cc.freemodel.dev",
+    "/v1/messages",
+    {
       "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-    }),
-  });
+    bodyStr
+  );
 
-  const data = (await response.json()) as {
+  const data = JSON.parse(body) as {
     content?: { type: string; text: string }[];
     error?: { message: string };
   };
 
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? "Anthropic API error");
+  if (statusCode >= 400) {
+    throw new Error(data.error?.message ?? `Anthropic API error (${statusCode})`);
   }
 
   const textBlock = data.content?.find((b) => b.type === "text");
