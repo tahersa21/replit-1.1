@@ -35,9 +35,18 @@ export const ChatRequestModel = {
   "claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
 } as const;
 
+export type ChatRequestProvider =
+  (typeof ChatRequestProvider)[keyof typeof ChatRequestProvider];
+
+export const ChatRequestProvider = {
+  freemodel: "freemodel",
+  xynera: "xynera",
+} as const;
+
 export interface ChatRequest {
   messages: ChatMessage[];
   model?: ChatRequestModel;
+  provider?: ChatRequestProvider;
 }
 
 export interface ChatResponse {

@@ -40,9 +40,17 @@ const MODEL_GROUPS: ModelGroup[] = [
 
 const MODELS: ModelEntry[] = MODEL_GROUPS.flatMap((g) => g.models);
 
+type Provider = "freemodel" | "xynera";
+
+const PROVIDERS: { id: Provider; label: string; color: string; description: string }[] = [
+  { id: "freemodel", label: "FreeModel", color: "bg-emerald-500", description: "api.freemodel.dev" },
+  { id: "xynera", label: "Xynera", color: "bg-violet-500", description: "www.xynera.vip" },
+];
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedModel, setSelectedModel] = useState("gpt-5.5");
+  const [selectedProvider, setSelectedProvider] = useState<Provider>("freemodel");
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
   const [uploadedFileType, setUploadedFileType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -51,6 +59,7 @@ export default function ChatPage() {
   const { toast } = useToast();
 
   const currentModel = MODELS.find((m) => m.id === selectedModel) ?? MODELS[0];
+  const currentProvider = PROVIDERS.find((p) => p.id === selectedProvider) ?? PROVIDERS[0];
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isStreaming) return;
@@ -69,7 +78,11 @@ export default function ChatPage() {
       const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, model: selectedModel }),
+        body: JSON.stringify({
+          messages: newMessages,
+          model: selectedModel,
+          provider: selectedProvider,
+        }),
         signal: abortRef.current.signal,
       });
 
@@ -202,50 +215,91 @@ export default function ChatPage() {
             </div>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all"
-              >
-                <span
-                  className={`h-2 w-2 rounded-full animate-pulse ${
-                    MODEL_GROUPS.find((g) => g.models.some((m) => m.id === selectedModel))?.color ??
-                    "bg-emerald-500"
-                  }`}
-                />
-                <span className="font-medium text-sm">{currentModel.label}</span>
-                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52 rounded-xl p-1">
-              {MODEL_GROUPS.map((group, gi) => (
-                <div key={group.group}>
-                  {gi > 0 && <div className="my-1 border-t border-border/40" />}
-                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${group.color}`} />
-                    {group.group}
-                  </p>
-                  {group.models.map((model) => (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onClick={() => setSelectedModel(model.id)}
-                      className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
-                    >
+          <div className="flex items-center gap-2">
+            {/* Provider selector */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all"
+                >
+                  <span className={`h-2 w-2 rounded-full ${currentProvider.color}`} />
+                  <span className="font-medium text-sm">{currentProvider.label}</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48 rounded-xl p-1">
+                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  المنصة
+                </p>
+                {PROVIDERS.map((p) => (
+                  <DropdownMenuItem
+                    key={p.id}
+                    onClick={() => setSelectedProvider(p.id)}
+                    className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${p.color}`} />
                       <div>
-                        <p className="font-medium text-sm">{model.label}</p>
-                        <p className="text-xs text-muted-foreground">{model.description}</p>
+                        <p className="font-medium text-sm">{p.label}</p>
+                        <p className="text-xs text-muted-foreground">{p.description}</p>
                       </div>
-                      {selectedModel === model.id && (
-                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </div>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                    </div>
+                    {selectedProvider === p.id && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary flex-shrink-0" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Model selector */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all"
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full animate-pulse ${
+                      MODEL_GROUPS.find((g) => g.models.some((m) => m.id === selectedModel))?.color ??
+                      "bg-emerald-500"
+                    }`}
+                  />
+                  <span className="font-medium text-sm">{currentModel.label}</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 rounded-xl p-1">
+                {MODEL_GROUPS.map((group, gi) => (
+                  <div key={group.group}>
+                    {gi > 0 && <div className="my-1 border-t border-border/40" />}
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                      <span className={`h-1.5 w-1.5 rounded-full ${group.color}`} />
+                      {group.group}
+                    </p>
+                    {group.models.map((model) => (
+                      <DropdownMenuItem
+                        key={model.id}
+                        onClick={() => setSelectedModel(model.id)}
+                        className="flex items-center justify-between gap-3 rounded-lg cursor-pointer"
+                      >
+                        <div>
+                          <p className="font-medium text-sm">{model.label}</p>
+                          <p className="text-xs text-muted-foreground">{model.description}</p>
+                        </div>
+                        {selectedModel === model.id && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </div>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </header>
 
@@ -256,7 +310,14 @@ export default function ChatPage() {
               <EmptyState />
             </div>
           ) : (
-            <ChatMessageList messages={messages} isTyping={isStreaming && messages[messages.length - 1]?.role === "assistant" && messages[messages.length - 1]?.content === ""} />
+            <ChatMessageList
+              messages={messages}
+              isTyping={
+                isStreaming &&
+                messages[messages.length - 1]?.role === "assistant" &&
+                messages[messages.length - 1]?.content === ""
+              }
+            />
           )}
         </div>
       </main>

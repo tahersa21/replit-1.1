@@ -134,6 +134,10 @@ components:
               claude-haiku-4-5-20251001,
             ]
           default: gpt-5.5
+        provider:
+          type: string
+          enum: [freemodel, xynera]
+          default: freemodel
       required:
         - messages
     ChatResponse:

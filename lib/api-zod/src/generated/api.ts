@@ -34,6 +34,7 @@ export const HealthCheckResponse = zod.object({
  * @summary Send a chat message
  */
 export const sendMessageBodyModelDefault = `gpt-5.5`;
+export const sendMessageBodyProviderDefault = `freemodel`;
 
 export const SendMessageBody = zod.object({
   messages: zod.array(
@@ -53,6 +54,9 @@ export const SendMessageBody = zod.object({
       "claude-haiku-4-5-20251001",
     ])
     .default(sendMessageBodyModelDefault),
+  provider: zod
+    .enum(["freemodel", "xynera"])
+    .default(sendMessageBodyProviderDefault),
 });
 
 export const SendMessageResponse = zod.object({

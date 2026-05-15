@@ -6,11 +6,6 @@ import { getContext } from "../context-store";
 
 const router = Router();
 
-const openaiClient = new OpenAI({
-  apiKey: process.env.FREEMODEL_API_KEY,
-  baseURL: "https://api.freemodel.dev/v1",
-});
-
 const DEFAULT_CONTEXT = `
 FreeModel Platform Documentation
 
@@ -23,6 +18,36 @@ Anthropic models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001
 
 Website: freemodel.dev
 `.trim();
+
+type ProviderConfig = {
+  openaiBaseURL: string;
+  anthropicHostname: string;
+  anthropicPath: string;
+  authHeader: (key: string) => Record<string, string>;
+  openaiApiKey: string;
+};
+
+function getProviderConfig(provider: string): ProviderConfig {
+  if (provider === "xynera") {
+    const key = process.env.XYNERA_API_KEY ?? "";
+    return {
+      openaiBaseURL: "https://www.xynera.vip/v1",
+      anthropicHostname: "www.xynera.vip",
+      anthropicPath: "/v1/messages",
+      authHeader: (k) => ({ Authorization: `Bearer ${k}` }),
+      openaiApiKey: key,
+    };
+  }
+  // default: freemodel
+  const key = process.env.FREEMODEL_API_KEY ?? "";
+  return {
+    openaiBaseURL: "https://api.freemodel.dev/v1",
+    anthropicHostname: "cc.freemodel.dev",
+    anthropicPath: "/v1/messages",
+    authHeader: (k) => ({ "x-api-key": k, "anthropic-version": "2023-06-01" }),
+    openaiApiKey: key,
+  };
+}
 
 function buildSystemPrompt(): string {
   const uploaded = getContext();
@@ -49,6 +74,8 @@ function startSSE(res: import("express").Response): void {
 
 async function streamAnthropicToSSE(
   res: import("express").Response,
+  cfg: ProviderConfig,
+  apiKey: string,
   model: string,
   systemPrompt: string,
   messages: { role: string; content: string }[]
@@ -61,49 +88,40 @@ async function streamAnthropicToSSE(
       system: systemPrompt,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
-
     const bodyBuffer = Buffer.from(bodyStr, "utf8");
 
-    // Send SSE comment heartbeats to keep the proxy connection alive
     const heartbeat = setInterval(() => {
       try { res.write(": heartbeat\n\n"); } catch { /* ignore */ }
     }, 10_000);
-
     const cleanup = () => clearInterval(heartbeat);
 
     const req = https.request(
       {
-        hostname: "cc.freemodel.dev",
-        path: "/v1/messages",
+        hostname: cfg.anthropicHostname,
+        path: cfg.anthropicPath,
         method: "POST",
         headers: {
-          "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
-          "anthropic-version": "2023-06-01",
+          ...cfg.authHeader(apiKey),
           "Content-Type": "application/json",
           "Content-Length": bodyBuffer.length,
         },
-        // No socket-level timeout — we keep the connection via heartbeat
       },
       (upstream) => {
         let buffer = "";
-
         upstream.on("data", (chunk: Buffer) => {
           buffer += chunk.toString("utf8");
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
-
           for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
             const jsonStr = line.slice(6).trim();
             if (!jsonStr || jsonStr === "[DONE]") continue;
-
             try {
               const event = JSON.parse(jsonStr) as {
                 type: string;
                 delta?: { type: string; text?: string };
                 error?: { message: string };
               };
-
               if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
                 sseWrite(res, JSON.stringify({ text: event.delta.text }));
               } else if (event.type === "message_stop") {
@@ -111,18 +129,14 @@ async function streamAnthropicToSSE(
               } else if (event.type === "error") {
                 sseWrite(res, JSON.stringify({ error: event.error?.message ?? "Anthropic stream error" }));
               }
-            } catch {
-              // ignore malformed lines
-            }
+            } catch { /* ignore malformed */ }
           }
         });
-
         upstream.on("end", () => { cleanup(); resolve(); });
         upstream.on("error", (err) => { cleanup(); reject(err); });
       }
     );
 
-    // Guard against total hang: 5 minutes hard limit via a manual timer
     const hardTimeout = setTimeout(() => {
       cleanup();
       req.destroy(new Error("Anthropic stream exceeded 5-minute limit"));
@@ -130,7 +144,6 @@ async function streamAnthropicToSSE(
 
     req.on("error", (err) => { cleanup(); clearTimeout(hardTimeout); reject(err); });
     req.on("close", () => clearTimeout(hardTimeout));
-
     req.write(bodyBuffer);
     req.end();
   });
@@ -138,11 +151,13 @@ async function streamAnthropicToSSE(
 
 async function streamOpenAIToSSE(
   res: import("express").Response,
+  cfg: ProviderConfig,
   model: string,
   systemPrompt: string,
   messages: { role: string; content: string }[]
 ): Promise<void> {
-  const stream = await openaiClient.chat.completions.create({
+  const client = new OpenAI({ apiKey: cfg.openaiApiKey, baseURL: cfg.openaiBaseURL });
+  const stream = await client.chat.completions.create({
     model,
     stream: true,
     messages: [
@@ -154,12 +169,8 @@ async function streamOpenAIToSSE(
 
   for await (const chunk of stream) {
     const text = chunk.choices[0]?.delta?.content;
-    if (text) {
-      sseWrite(res, JSON.stringify({ text }));
-    }
-    if (chunk.choices[0]?.finish_reason === "stop") {
-      sseWrite(res, "[DONE]");
-    }
+    if (text) sseWrite(res, JSON.stringify({ text }));
+    if (chunk.choices[0]?.finish_reason === "stop") sseWrite(res, "[DONE]");
   }
 }
 
@@ -170,16 +181,20 @@ router.post("/chat/stream", async (req, res) => {
     return;
   }
 
-  const { messages, model = "gpt-5.5" } = parsed.data;
+  const { messages, model = "gpt-5.5", provider = "freemodel" } = parsed.data;
+  const cfg = getProviderConfig(provider);
+  const apiKey = provider === "xynera"
+    ? (process.env.XYNERA_API_KEY ?? "")
+    : (process.env.FREEMODEL_API_KEY ?? "");
   const systemPrompt = buildSystemPrompt();
 
   startSSE(res);
 
   try {
     if (isClaudeModel(model)) {
-      await streamAnthropicToSSE(res, model, systemPrompt, messages);
+      await streamAnthropicToSSE(res, cfg, apiKey, model, systemPrompt, messages);
     } else {
-      await streamOpenAIToSSE(res, model, systemPrompt, messages);
+      await streamOpenAIToSSE(res, cfg, model, systemPrompt, messages);
     }
   } catch (err: unknown) {
     req.log.error({ err }, "Stream chat error");
