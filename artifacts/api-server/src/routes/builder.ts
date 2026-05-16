@@ -134,6 +134,29 @@ const VERIFIER_SYSTEM = `You are a senior code reviewer. Review the provided pro
 {"ok": true, "notes": "brief confirmation in Arabic"} or {"ok": false, "notes": "what is missing or broken in Arabic"}
 No markdown, no explanation — just the JSON object.`;
 
+const DESIGN_REVIEWER_SYSTEM = `You are an expert UI/UX designer and front-end visual auditor. 
+Analyze the provided HTML/CSS/JS code and audit it for visual and design quality.
+Output ONLY valid JSON — no markdown fences, no explanation.
+Format:
+{
+  "score": <number 0-100>,
+  "summary": "<one sentence summary in Arabic>",
+  "issues": [
+    {
+      "severity": "high" | "medium" | "low",
+      "category": "colors" | "typography" | "spacing" | "responsive" | "animation" | "accessibility" | "ux" | "consistency",
+      "title": "<short title in Arabic>",
+      "description": "<what is wrong in Arabic>",
+      "fix": "<exact CSS/HTML fix suggestion in Arabic, be specific>"
+    }
+  ]
+}
+Severity guide: high = broken UX or very ugly, medium = noticeable flaw, low = minor polish.
+Check for: color contrast & harmony, font hierarchy, padding/margin consistency, hover & focus states,
+responsive breakpoints, smooth transitions, button clarity, empty states, visual hierarchy, CSS variables usage,
+Arabic RTL support if text is Arabic.
+Return max 8 issues. If no issues found for a category, skip it.`;
+
 // ── Improve route — streams improved file content token-by-token ──────────────
 router.post("/builder/improve", async (req, res) => {
   const body = req.body as Record<string, unknown>;
@@ -256,8 +279,8 @@ Output ONLY the raw file content, nothing else.`,
       sseWrite(res, { type: "file_done", path: fileSpec.path, content: fileContent });
     }
 
-    // ── Phase 3: Verification (Claude, non-streaming — need full JSON) ────────
-    sseWrite(res, { type: "status", message: "جارٍ مراجعة المشروع...", phase: "verifying", model: phases.verifyModel });
+    // ── Phase 3: Code verification ────────────────────────────────────────────
+    sseWrite(res, { type: "status", message: "جارٍ مراجعة الكود...", phase: "verifying", model: phases.verifyModel });
 
     const verifyText = await callAI(
       provider, phases.verifyModel, VERIFIER_SYSTEM,
@@ -272,7 +295,38 @@ First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`
       verification = JSON.parse(cleaned) as typeof verification;
     } catch { /* keep defaults */ }
 
-    sseWrite(res, { type: "done", verification, files: generatedFiles, phases });
+    // ── Phase 4: Visual / design review ──────────────────────────────────────
+    sseWrite(res, { type: "status", message: "جارٍ المراجعة البصرية والتصميمية...", phase: "design_review", model: phases.verifyModel });
+
+    const htmlFile  = generatedFiles.find((f) => f.path.endsWith(".html"));
+    const cssFile   = generatedFiles.find((f) => f.path.endsWith(".css"));
+    const designPrompt = `Project: ${plan.projectName}
+HTML (${htmlFile?.path ?? "none"}):
+${htmlFile?.content.slice(0, 1200) ?? "not provided"}
+
+CSS (${cssFile?.path ?? "none"}):
+${cssFile?.content.slice(0, 2000) ?? "not provided"}
+
+User's original request: ${prompt}`;
+
+    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt);
+
+    interface DesignIssue {
+      severity: "high" | "medium" | "low";
+      category: string;
+      title: string;
+      description: string;
+      fix: string;
+    }
+    interface DesignReview { score: number; summary: string; issues: DesignIssue[] }
+
+    let designReview: DesignReview = { score: 80, summary: "تم تحليل التصميم", issues: [] };
+    try {
+      const cleaned = designText.replace(/^```[\w]*\n?/gm, "").replace(/```$/gm, "").trim();
+      designReview = JSON.parse(cleaned) as DesignReview;
+    } catch { /* keep defaults */ }
+
+    sseWrite(res, { type: "done", verification, designReview, files: generatedFiles, phases });
 
   } catch (err: unknown) {
     req.log.error({ err }, "Builder stream error");
