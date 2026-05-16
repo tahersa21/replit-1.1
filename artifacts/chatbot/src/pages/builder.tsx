@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -62,23 +62,14 @@ interface PhaseModels {
 
 type BuildPhase = "idle" | "planning" | "coding" | "verifying" | "done" | "error";
 
-// Mirror what the backend uses so we can display it before the build starts
 const PHASE_MODELS: Record<Provider, PhaseModels> = {
-  freemodel: {
-    planModel:   "claude-opus-4-7",
-    codeModel:   "gpt-5.5",
-    verifyModel: "claude-sonnet-4-6",
-  },
-  xynera: {
-    planModel:   "claude-opus-4-7",
-    codeModel:   "gpt-5.5",
-    verifyModel: "claude-4-6-sonnet",
-  },
+  freemodel: { planModel: "claude-opus-4-7", codeModel: "gpt-5.5",  verifyModel: "claude-sonnet-4-6" },
+  xynera:    { planModel: "claude-opus-4-7", codeModel: "gpt-5.5",  verifyModel: "claude-4-6-sonnet" },
 };
 
 const PROVIDERS = [
   { id: "freemodel" as Provider, label: "FreeModel", color: "bg-emerald-500" },
-  { id: "xynera"    as Provider, label: "Xynera",    color: "bg-violet-500" },
+  { id: "xynera"    as Provider, label: "Xynera",    color: "bg-violet-500"  },
 ];
 
 const EXAMPLE_PROMPTS = [
@@ -89,57 +80,46 @@ const EXAMPLE_PROMPTS = [
   "أنشئ صفحة هبوط لتطبيق موبايل مع ميزات وأسعار وشهادات عملاء",
 ];
 
-// ── Tiny phase-model badge ────────────────────────────────────────────────────
-function ModelBadge({ model, active }: { model: string; active: boolean }) {
-  const isClaude = model.toLowerCase().includes("claude");
+// ── Pipeline step indicator ───────────────────────────────────────────────────
+const STEPS = [
+  { key: "planning"  as BuildPhase, label: "تخطيط",  Icon: BrainCircuit, modelKey: "planModel"   as keyof PhaseModels },
+  { key: "coding"    as BuildPhase, label: "كود",     Icon: Code2,        modelKey: "codeModel"   as keyof PhaseModels },
+  { key: "verifying" as BuildPhase, label: "مراجعة",  Icon: ShieldCheck,  modelKey: "verifyModel" as keyof PhaseModels },
+];
+
+const PHASE_ORDER: BuildPhase[] = ["idle", "planning", "coding", "verifying", "done", "error"];
+
+function PipelineBar({ phase, phases }: { phase: BuildPhase; phases: PhaseModels }) {
+  const phaseIdx = PHASE_ORDER.indexOf(phase);
   return (
-    <span className={cn(
-      "inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full border transition-all",
-      active
-        ? isClaude
-          ? "bg-orange-500/15 border-orange-400/40 text-orange-600 dark:text-orange-400"
-          : "bg-emerald-500/15 border-emerald-400/40 text-emerald-700 dark:text-emerald-400"
-        : "bg-muted/50 border-border/30 text-muted-foreground/50"
-    )}>
-      {model}
-    </span>
-  );
-}
-
-// ── 3-step pipeline indicator ─────────────────────────────────────────────────
-function PipelineIndicator({ phase, phases }: { phase: BuildPhase; phases: PhaseModels }) {
-  const steps = [
-    { key: "planning",  label: "تخطيط",  icon: BrainCircuit, model: phases.planModel   },
-    { key: "coding",    label: "كود",     icon: Code2,        model: phases.codeModel   },
-    { key: "verifying", label: "مراجعة",  icon: ShieldCheck,  model: phases.verifyModel },
-  ] as const;
-
-  const order: BuildPhase[] = ["idle", "planning", "coding", "verifying", "done", "error"];
-  const phaseIdx = order.indexOf(phase);
-
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {steps.map((step, i) => {
-        const stepIdx = order.indexOf(step.key as BuildPhase);
-        const isDone    = phaseIdx > stepIdx || phase === "done";
-        const isActive  = phase === step.key;
-        const Icon = step.icon;
+    <div className="flex items-center gap-1">
+      {STEPS.map((step, i) => {
+        const stepIdx  = PHASE_ORDER.indexOf(step.key);
+        const isDone   = phaseIdx > stepIdx || phase === "done";
+        const isActive = phase === step.key;
+        const model    = phases[step.modelKey];
+        const isClaude = model.includes("claude");
+        const { Icon } = step;
         return (
           <React.Fragment key={step.key}>
-            {i > 0 && <div className={cn("h-px w-3 flex-none", isDone ? "bg-primary/50" : "bg-border/40")} />}
+            {i > 0 && <div className={cn("h-px w-3 flex-none", isDone ? "bg-primary/50" : "bg-border/30")} />}
             <div className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] transition-all",
-              isActive  ? "bg-primary/10 border-primary/30 text-primary" :
-              isDone    ? "bg-emerald-500/10 border-emerald-400/30 text-emerald-700 dark:text-emerald-400" :
-                          "bg-muted/30 border-border/30 text-muted-foreground/50"
+              "flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] transition-all whitespace-nowrap",
+              isActive ? "bg-primary/10 border-primary/30 text-primary" :
+              isDone   ? "bg-emerald-500/10 border-emerald-400/30 text-emerald-700 dark:text-emerald-400" :
+                         "bg-muted/30 border-border/20 text-muted-foreground/40"
             )}>
-              {isDone
-                ? <CheckCircle2 className="h-3 w-3" />
-                : isActive
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <Icon className="h-3 w-3" />}
+              {isDone    ? <CheckCircle2 className="h-3 w-3 flex-none" /> :
+               isActive  ? <Loader2 className="h-3 w-3 flex-none animate-spin" /> :
+                           <Icon className="h-3 w-3 flex-none" />}
               <span className="font-medium">{step.label}</span>
-              <ModelBadge model={step.model} active={isActive || isDone} />
+              <span className={cn(
+                "font-mono text-[9px] px-1 py-0.5 rounded",
+                isActive
+                  ? isClaude ? "bg-orange-500/15 text-orange-600 dark:text-orange-400"
+                              : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                  : isDone ? "bg-muted text-muted-foreground" : "bg-transparent text-muted-foreground/30"
+              )}>{model}</span>
             </div>
           </React.Fragment>
         );
@@ -148,54 +128,93 @@ function PipelineIndicator({ phase, phases }: { phase: BuildPhase; phases: Phase
   );
 }
 
+// ── Planning skeleton ─────────────────────────────────────────────────────────
+function PlanningSkeleton({ model }: { model: string }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center p-10 select-none" dir="rtl">
+      <div className="w-full max-w-lg space-y-5">
+        {/* Model badge */}
+        <div className="flex items-center gap-2 justify-center mb-2">
+          <div className="h-8 w-8 rounded-lg bg-orange-500/15 flex items-center justify-center">
+            <BrainCircuit className="h-4 w-4 text-orange-500" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-foreground">Claude يخطط المشروع</p>
+            <p className="text-[10px] text-muted-foreground font-mono">{model}</p>
+          </div>
+        </div>
+
+        {/* Skeleton lines */}
+        {[
+          "w-2/3", "w-full", "w-5/6", "w-full", "w-3/4",
+          "w-full", "w-4/5", "w-full", "w-2/3",
+        ].map((w, i) => (
+          <div
+            key={i}
+            className={cn("h-3 rounded-full bg-muted animate-pulse", w)}
+            style={{ animationDelay: `${i * 80}ms` }}
+          />
+        ))}
+
+        <p className="text-center text-xs text-muted-foreground pt-2">
+          جارٍ تحليل المشروع وتصميم الهيكل...
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function BuilderPage() {
-  const [prompt, setPrompt] = useState("");
-  const [provider, setProvider] = useState<Provider>("freemodel");
-  const [phase, setPhase] = useState<BuildPhase>("idle");
+  const [prompt, setPrompt]       = useState("");
+  const [provider, setProvider]   = useState<Provider>("freemodel");
+  const [phase, setPhase]         = useState<BuildPhase>("idle");
   const [statusMsg, setStatusMsg] = useState("");
-  const [activePhaseModel, setActivePhaseModel] = useState<string>("");
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
+  const [plan, setPlan]           = useState<Plan | null>(null);
+  const [filesMap, setFilesMap]   = useState<Map<string, string>>(new Map());
   const [activeFile, setActiveFile] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"code" | "preview">("code");
-  const [verification, setVerification] = useState<{ ok: boolean; notes: string } | null>(null);
-  const [errorMsg, setErrorMsg] = useState("");
+  const [activeTab, setActiveTab]   = useState<"code" | "preview">("code");
   const [completedFiles, setCompletedFiles] = useState<Set<string>>(new Set());
-  const abortRef = useRef<AbortController | null>(null);
+  const [verification, setVerification] = useState<{ ok: boolean; notes: string } | null>(null);
+  const [errorMsg, setErrorMsg]   = useState("");
+  const codeEndRef   = useRef<HTMLDivElement>(null);
   const activeFileRef = useRef<string | null>(null);
   const { toast } = useToast();
 
   const currentProvider = PROVIDERS.find((p) => p.id === provider)!;
-  const phases = PHASE_MODELS[provider];
+  const phases          = PHASE_MODELS[provider];
+  const isBuilding      = phase === "planning" || phase === "coding" || phase === "verifying";
+  const generatedFiles: GeneratedFile[] = Array.from(filesMap.entries()).map(([path, content]) => ({ path, content }));
+
+  // Auto-scroll code view as content streams in
+  useEffect(() => {
+    if (isBuilding) codeEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [filesMap, isBuilding]);
 
   const handleBuild = useCallback(async () => {
-    if (!prompt.trim() || phase === "planning" || phase === "coding" || phase === "verifying") return;
+    if (!prompt.trim() || isBuilding) return;
 
     setPlan(null);
-    setGeneratedFiles([]);
+    setFilesMap(new Map());
     setActiveFile(null);
     activeFileRef.current = null;
     setVerification(null);
     setErrorMsg("");
     setCompletedFiles(new Set());
     setPhase("planning");
-    setActivePhaseModel(PHASE_MODELS[provider].planModel);
-
-    abortRef.current = new AbortController();
+    setActiveTab("code");
 
     try {
       const response = await fetch("/api/builder/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, provider }),
-        signal: abortRef.current.signal,
       });
 
       if (!response.ok || !response.body) throw new Error("فشل الاتصال بالخادم");
 
-      const reader = response.body.getReader();
+      const reader  = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
+      let buffer    = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -208,58 +227,68 @@ export default function BuilderPage() {
           if (!line.startsWith("data: ")) continue;
           const raw = line.slice(6).trim();
           if (!raw) continue;
-
           try {
             const msg = JSON.parse(raw) as {
-              type: string;
-              message?: string;
-              phase?: string;
-              model?: string;
-              plan?: Plan;
-              path?: string;
-              content?: string;
+              type: string; message?: string; phase?: string; model?: string;
+              plan?: Plan; path?: string; chunk?: string; content?: string;
               verification?: { ok: boolean; notes: string };
               files?: GeneratedFile[];
-              phases?: PhaseModels;
             };
 
             switch (msg.type) {
               case "status":
                 setStatusMsg(msg.message ?? "");
-                if (msg.model) setActivePhaseModel(msg.model);
                 if (msg.phase === "planning")  setPhase("planning");
                 if (msg.phase === "coding")    setPhase("coding");
                 if (msg.phase === "verifying") setPhase("verifying");
                 break;
 
               case "plan":
-                if (msg.plan) {
-                  setPlan(msg.plan);
-                  setPhase("coding");
-                  setActivePhaseModel(PHASE_MODELS[provider].codeModel);
-                }
+                if (msg.plan) { setPlan(msg.plan); setPhase("coding"); }
                 break;
 
-              case "file_done":
-                if (msg.path && msg.content !== undefined) {
-                  setGeneratedFiles((prev) => {
-                    const exists = prev.find((f) => f.path === msg.path);
-                    if (exists) return prev.map((f) => f.path === msg.path ? { ...f, content: msg.content! } : f);
-                    return [...prev, { path: msg.path!, content: msg.content! }];
-                  });
-                  setCompletedFiles((prev) => new Set([...prev, msg.path!]));
+              // file_start: switch to this file immediately (shows empty editor)
+              case "file_start":
+                if (msg.path) {
+                  setFilesMap((prev) => { const m = new Map(prev); if (!m.has(msg.path!)) m.set(msg.path!, ""); return m; });
                   if (!activeFileRef.current) {
                     activeFileRef.current = msg.path!;
                     setActiveFile(msg.path!);
                   }
+                  // Always follow the currently-generating file
+                  activeFileRef.current = msg.path!;
+                  setActiveFile(msg.path!);
+                }
+                break;
+
+              // file_chunk: append token to file content (live typing)
+              case "file_chunk":
+                if (msg.path && msg.chunk) {
+                  setFilesMap((prev) => {
+                    const m = new Map(prev);
+                    m.set(msg.path!, (m.get(msg.path!) ?? "") + msg.chunk!);
+                    return m;
+                  });
+                }
+                break;
+
+              case "file_done":
+                if (msg.path) {
+                  if (msg.content !== undefined) {
+                    setFilesMap((prev) => { const m = new Map(prev); m.set(msg.path!, msg.content!); return m; });
+                  }
+                  setCompletedFiles((prev) => new Set([...prev, msg.path!]));
                 }
                 break;
 
               case "done":
                 setVerification(msg.verification ?? { ok: true, notes: "تم البناء بنجاح" });
-                if (msg.files) setGeneratedFiles(msg.files);
+                if (msg.files) {
+                  const m = new Map<string, string>();
+                  msg.files.forEach((f) => m.set(f.path, f.content));
+                  setFilesMap(m);
+                }
                 setPhase("done");
-                setActivePhaseModel("");
                 break;
 
               case "error":
@@ -267,64 +296,62 @@ export default function BuilderPage() {
                 setPhase("error");
                 break;
             }
-          } catch { /* ignore malformed */ }
+          } catch { /* ignore */ }
         }
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        setErrorMsg("فشل الاتصال بالخادم. تحقق من الإنترنت وحاول مرة أخرى.");
+        setErrorMsg("فشل الاتصال بالخادم.");
         setPhase("error");
       }
     }
-  }, [prompt, provider, phase]);
+  }, [prompt, provider, isBuilding]);
 
-  const handleDownloadFile = (file: GeneratedFile) => {
-    const blob = new Blob([file.content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = file.path; a.click();
+  // ── Download helpers ──────────────────────────────────────────────────────
+  const handleDownloadFile = (path: string, content: string) => {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = path; a.click();
     URL.revokeObjectURL(url);
   };
 
   const handleDownloadAll = () => {
-    if (generatedFiles.length === 0) return;
-    const htmlFile = generatedFiles.find((f) => f.path.endsWith(".html"));
-    if (htmlFile) {
-      let combined = htmlFile.content;
-      const cssFile = generatedFiles.find((f) => f.path.endsWith(".css"));
-      if (cssFile) combined = combined.replace(/<link[^>]*stylesheet[^>]*>/i, `<style>\n${cssFile.content}\n</style>`);
-      const jsFile = generatedFiles.find((f) => f.path.endsWith(".js") && !f.path.endsWith(".css.js"));
-      if (jsFile) combined = combined.replace(/<script[^>]*src=[^>]*><\/script>/i, `<script>\n${jsFile.content}\n</script>`);
-      const blob = new Blob([combined], { type: "text/html;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${plan?.projectName ?? "project"}.html`; a.click();
-      URL.revokeObjectURL(url);
-      toast({ title: "تم التحميل", description: "تم دمج الملفات في ملف HTML واحد جاهز للتشغيل" });
-    } else {
-      generatedFiles.forEach((f) => handleDownloadFile(f));
-    }
+    const htmlEntry = generatedFiles.find((f) => f.path.endsWith(".html"));
+    if (!htmlEntry) { generatedFiles.forEach((f) => handleDownloadFile(f.path, f.content)); return; }
+
+    let html    = htmlEntry.content;
+    const css   = generatedFiles.find((f) => f.path.endsWith(".css"));
+    const js    = generatedFiles.find((f) => f.path.endsWith(".js"));
+    if (css) html = html.replace(/<link[^>]*stylesheet[^>]*>/i, `<style>\n${css.content}\n</style>`);
+    if (js)  html = html.replace(/<script[^>]*src=[^>]*><\/script>/i, `<script>\n${js.content}\n</script>`);
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `${plan?.projectName ?? "project"}.html`; a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "تم التحميل", description: "ملف HTML واحد يحتوي كل الكود جاهز للتشغيل" });
   };
 
   const getPreviewSrc = () => {
-    const htmlFile = generatedFiles.find((f) => f.path.endsWith(".html"));
-    if (!htmlFile) return null;
-    let html = htmlFile.content;
-    const cssFile = generatedFiles.find((f) => f.path.endsWith(".css"));
-    if (cssFile) html = html.replace(/<link[^>]*stylesheet[^>]*>/i, `<style>\n${cssFile.content}\n</style>`);
-    const jsFile = generatedFiles.find((f) => f.path.endsWith(".js") && !f.path.endsWith(".css.js"));
-    if (jsFile) html = html.replace(/<script[^>]*src=[^>]*><\/script>/i, `<script>\n${jsFile.content}\n</script>`);
+    const htmlEntry = generatedFiles.find((f) => f.path.endsWith(".html"));
+    if (!htmlEntry || !completedFiles.has(htmlEntry.path)) return null;
+    let html  = htmlEntry.content;
+    const css = generatedFiles.find((f) => f.path.endsWith(".css") && completedFiles.has(f.path));
+    const js  = generatedFiles.find((f) => f.path.endsWith(".js")  && completedFiles.has(f.path));
+    if (css) html = html.replace(/<link[^>]*stylesheet[^>]*>/i, `<style>\n${css.content}\n</style>`);
+    if (js)  html = html.replace(/<script[^>]*src=[^>]*><\/script>/i, `<script>\n${js.content}\n</script>`);
     return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
   };
 
-  const activeFileContent = generatedFiles.find((f) => f.path === activeFile);
-  const isBuilding = phase === "planning" || phase === "coding" || phase === "verifying";
-  const previewSrc = getPreviewSrc();
+  const activeContent = activeFile ? (filesMap.get(activeFile) ?? "") : "";
+  const previewSrc    = getPreviewSrc();
 
   return (
     <div className="flex flex-col h-[100dvh] bg-background text-foreground overflow-hidden" dir="rtl">
-      {/* Header */}
-      <header className="flex-none px-4 py-3 border-b border-border/50 bg-background/80 backdrop-blur-md sticky top-0 z-10">
+      {/* ── Header ── */}
+      <header className="flex-none px-4 py-3 border-b border-border/50 bg-background/80 backdrop-blur-md z-10">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Link href="/">
@@ -337,14 +364,11 @@ export default function BuilderPage() {
             </div>
             <div>
               <h1 className="font-semibold text-base leading-tight">وكيل البناء الذكي</h1>
-              <p className="text-xs text-muted-foreground leading-tight">3 نماذج تتعاون لبناء مشروعك</p>
+              <p className="text-[11px] text-muted-foreground">3 نماذج تتعاون لبناء مشروعك</p>
             </div>
           </div>
 
-          {/* Pipeline always visible in header */}
-          <div className="flex-1 flex justify-center">
-            <PipelineIndicator phase={phase} phases={phases} />
-          </div>
+          <PipelineBar phase={phase} phases={phases} />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -369,134 +393,102 @@ export default function BuilderPage() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Panel */}
+        {/* ── Left Panel ── */}
         <div className="w-72 flex-none flex flex-col border-l border-border/50 overflow-hidden">
 
-          {/* Model assignment card */}
+          {/* Model assignment */}
           <div className="p-3 border-b border-border/30 bg-muted/20">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">النماذج المستخدمة</p>
-            <div className="space-y-1.5">
-              {[
-                { icon: BrainCircuit, label: "التخطيط",  model: phases.planModel,   phaseKey: "planning"  as BuildPhase },
-                { icon: Code2,        label: "الكود",     model: phases.codeModel,   phaseKey: "coding"    as BuildPhase },
-                { icon: ShieldCheck,  label: "المراجعة",  model: phases.verifyModel, phaseKey: "verifying" as BuildPhase },
-              ].map(({ icon: Icon, label, model, phaseKey }) => {
-                const order: BuildPhase[] = ["idle", "planning", "coding", "verifying", "done", "error"];
-                const phaseIdx   = order.indexOf(phase);
-                const stepIdx    = order.indexOf(phaseKey);
-                const isDone     = phaseIdx > stepIdx || phase === "done";
-                const isActive   = phase === phaseKey;
-                const isClaude   = model.toLowerCase().includes("claude");
-                return (
-                  <div key={phaseKey} className={cn(
-                    "flex items-center gap-2 px-2 py-1.5 rounded-lg border text-xs transition-all",
-                    isActive  ? "bg-primary/8 border-primary/25" :
-                    isDone    ? "bg-emerald-500/8 border-emerald-400/20" :
-                                "bg-transparent border-border/20"
+            {STEPS.map(({ key: stepKey, label, Icon, modelKey }) => {
+              const model    = phases[modelKey];
+              const isClaude = model.includes("claude");
+              const idx      = PHASE_ORDER.indexOf(phase);
+              const sIdx     = PHASE_ORDER.indexOf(stepKey);
+              const isDone   = idx > sIdx || phase === "done";
+              const isActive = phase === stepKey;
+              return (
+                <div key={stepKey} className={cn(
+                  "flex items-center gap-2 px-2 py-1.5 rounded-lg border text-xs mb-1 transition-all",
+                  isActive ? "bg-primary/8 border-primary/25" : isDone ? "bg-emerald-500/8 border-emerald-400/20" : "bg-transparent border-border/15"
+                )}>
+                  <div className={cn(
+                    "h-5 w-5 rounded-md flex items-center justify-center flex-none",
+                    isActive ? "bg-primary/15 text-primary" : isDone ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground/40"
                   )}>
-                    <div className={cn(
-                      "h-5 w-5 rounded-md flex items-center justify-center flex-none",
-                      isActive ? "bg-primary/15 text-primary" :
-                      isDone   ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
-                                 "bg-muted text-muted-foreground/50"
-                    )}>
-                      {isDone ? <CheckCircle2 className="h-3 w-3" /> :
-                       isActive ? <Loader2 className="h-3 w-3 animate-spin" /> :
-                       <Icon className="h-3 w-3" />}
-                    </div>
-                    <span className={cn("font-medium flex-none w-12",
-                      isActive ? "text-foreground" : isDone ? "text-foreground/80" : "text-muted-foreground/60"
-                    )}>{label}</span>
-                    <span className={cn(
-                      "text-[10px] font-mono truncate",
-                      isActive
-                        ? isClaude ? "text-orange-600 dark:text-orange-400 font-semibold" : "text-emerald-700 dark:text-emerald-400 font-semibold"
-                        : isDone   ? "text-muted-foreground" : "text-muted-foreground/40"
-                    )}>{model}</span>
+                    {isDone ? <CheckCircle2 className="h-3 w-3" /> : isActive ? <Loader2 className="h-3 w-3 animate-spin" /> : <Icon className="h-3 w-3" />}
                   </div>
-                );
-              })}
-            </div>
+                  <span className={cn("font-medium flex-none w-12", isActive || isDone ? "text-foreground/90" : "text-muted-foreground/50")}>{label}</span>
+                  <span className={cn(
+                    "text-[10px] font-mono truncate",
+                    isActive ? isClaude ? "text-orange-600 dark:text-orange-400 font-semibold" : "text-emerald-700 dark:text-emerald-400 font-semibold"
+                             : isDone  ? "text-muted-foreground" : "text-muted-foreground/35"
+                  )}>{model}</span>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Prompt Input */}
+          {/* Prompt + build button */}
           <div className="p-3 border-b border-border/30">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) void handleBuild(); }}
               placeholder="صف المشروع الذي تريد بناءه..."
-              className="w-full h-24 resize-none rounded-xl border border-border/60 bg-card/50 px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all"
               disabled={isBuilding}
-            />
+              className="w-full h-24 resize-none rounded-xl border border-border/60 bg-card/50 px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all" />
             <Button onClick={() => void handleBuild()} disabled={!prompt.trim() || isBuilding}
               className="w-full mt-2 rounded-xl gap-2">
-              {isBuilding
-                ? <><Loader2 className="h-4 w-4 animate-spin" />جارٍ البناء...</>
-                : <><Sparkles className="h-4 w-4" />ابنِ المشروع</>}
+              {isBuilding ? <><Loader2 className="h-4 w-4 animate-spin" />جارٍ البناء...</> : <><Sparkles className="h-4 w-4" />ابنِ المشروع</>}
             </Button>
             <p className="text-[10px] text-muted-foreground text-center mt-1">Ctrl+Enter للبناء السريع</p>
           </div>
 
-          {/* Examples / Plan */}
+          {/* Status / plan / examples */}
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* Status message */}
             {statusMsg && isBuilding && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground bg-primary/5 rounded-lg px-3 py-2">
+              <div className="flex items-center gap-2 text-xs bg-primary/5 rounded-lg px-3 py-2 text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-none" />
-                <span>{statusMsg}</span>
+                {statusMsg}
               </div>
             )}
 
-            {/* Error */}
             {phase === "error" && (
               <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">
-                <AlertCircle className="h-3.5 w-3.5 flex-none mt-0.5" />
-                <span>{errorMsg}</span>
+                <AlertCircle className="h-3.5 w-3.5 flex-none mt-0.5" />{errorMsg}
               </div>
             )}
 
-            {/* Verification result */}
             {verification && phase === "done" && (
               <div className={cn(
                 "flex items-start gap-2 text-xs rounded-lg px-3 py-2",
-                verification.ok
-                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                  : "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                verification.ok ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : "bg-amber-500/10 text-amber-700 dark:text-amber-400"
               )}>
-                {verification.ok
-                  ? <CheckCircle2 className="h-3.5 w-3.5 flex-none mt-0.5" />
-                  : <AlertCircle className="h-3.5 w-3.5 flex-none mt-0.5" />}
-                <span>{verification.notes}</span>
+                {verification.ok ? <CheckCircle2 className="h-3.5 w-3.5 flex-none mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 flex-none mt-0.5" />}
+                {verification.notes}
               </div>
             )}
 
-            {/* Plan tasks + files */}
             {plan ? (
               <div>
-                <div className="mb-2">
-                  <p className="font-semibold text-sm">{plan.projectName}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{plan.description}</p>
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {plan.techStack.map((t) => (
-                      <span key={t} className="text-[10px] px-2 py-0.5 bg-primary/10 text-primary rounded-full">{t}</span>
-                    ))}
-                  </div>
+                <p className="font-semibold text-sm">{plan.projectName}</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{plan.description}</p>
+                <div className="flex flex-wrap gap-1 mt-1.5 mb-3">
+                  {plan.techStack.map((t) => <span key={t} className="text-[10px] px-2 py-0.5 bg-primary/10 text-primary rounded-full">{t}</span>)}
                 </div>
 
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">المهام</p>
                 <div className="space-y-1.5 mb-3">
                   {plan.tasks.map((task) => {
-                    const taskFiles = task.files ?? [];
-                    const done = taskFiles.every((f) => completedFiles.has(f));
-                    const partial = !done && taskFiles.some((f) => completedFiles.has(f));
+                    const tf      = task.files ?? [];
+                    const done    = tf.every((f) => completedFiles.has(f));
+                    const partial = !done && tf.some((f) => completedFiles.has(f));
+                    const active  = !done && !partial && tf.some((f) => f === activeFile);
                     return (
                       <div key={task.id} className="flex items-start gap-2 text-xs">
-                        {done    ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-none mt-0.5" /> :
-                         partial ? <Loader2 className="h-3.5 w-3.5 text-primary animate-spin flex-none mt-0.5" /> :
-                                   <Circle className="h-3.5 w-3.5 text-muted-foreground/30 flex-none mt-0.5" />}
+                        {done    ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-none mt-0.5" />
+                        : active || partial ? <Loader2 className="h-3.5 w-3.5 text-primary animate-spin flex-none mt-0.5" />
+                        :                    <Circle className="h-3.5 w-3.5 text-muted-foreground/30 flex-none mt-0.5" />}
                         <div>
-                          <p className={cn("font-medium leading-snug", done ? "text-foreground" : "text-muted-foreground")}>{task.title}</p>
+                          <p className={cn("font-medium", done ? "text-foreground" : "text-muted-foreground")}>{task.title}</p>
                           <p className="text-[10px] text-muted-foreground/60 leading-relaxed">{task.description}</p>
                         </div>
                       </div>
@@ -507,22 +499,24 @@ export default function BuilderPage() {
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">الملفات</p>
                 <div className="space-y-0.5">
                   {plan.files.map((f) => {
-                    const isDone = completedFiles.has(f.path);
+                    const isDone    = completedFiles.has(f.path);
+                    const isCurrent = activeFile === f.path && !isDone && isBuilding;
                     return (
                       <button key={f.path}
-                        onClick={() => { if (isDone) { setActiveFile(f.path); setActiveTab("code"); } }}
-                        disabled={!isDone}
+                        onClick={() => { setActiveFile(f.path); setActiveTab("code"); }}
                         className={cn(
                           "w-full text-right flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs transition-all",
                           activeFile === f.path ? "bg-primary/15 text-primary" :
-                          isDone ? "hover:bg-accent cursor-pointer text-foreground" :
-                                   "text-muted-foreground/40 cursor-not-allowed"
+                          isDone               ? "hover:bg-accent cursor-pointer text-foreground" :
+                          isCurrent            ? "bg-primary/8 text-primary" :
+                                                 "text-muted-foreground/50"
                         )}>
-                        {isDone
-                          ? <CheckCircle2 className="h-3 w-3 text-emerald-500 flex-none" />
-                          : <Circle className="h-3 w-3 flex-none" />}
+                        {isDone    ? <CheckCircle2 className="h-3 w-3 text-emerald-500 flex-none" />
+                        : isCurrent ? <Loader2 className="h-3 w-3 animate-spin text-primary flex-none" />
+                        :            <Circle className="h-3 w-3 flex-none opacity-40" />}
                         <FileCode2 className="h-3 w-3 flex-none" />
                         <span className="font-mono">{f.path}</span>
+                        {isCurrent && <span className="mr-auto text-[9px] opacity-60">يكتب...</span>}
                       </button>
                     );
                   })}
@@ -551,28 +545,29 @@ export default function BuilderPage() {
           </div>
         </div>
 
-        {/* Right Panel: Code + Preview */}
+        {/* ── Right Panel ── */}
         <div className="flex-1 flex flex-col overflow-hidden relative">
-          {generatedFiles.length === 0 && !isBuilding && (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-muted-foreground">
+
+          {/* Idle screen */}
+          {filesMap.size === 0 && phase === "idle" && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
               <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
                 <Hammer className="h-8 w-8 text-primary/60" />
               </div>
-              <h2 className="text-lg font-semibold text-foreground mb-2">وكيل البناء الذكي</h2>
-              <p className="text-sm leading-relaxed max-w-xs mb-6">
-                صف مشروعك وسيتولى الوكيل التخطيط والبناء والمراجعة تلقائياً باستخدام أنسب نموذج لكل مرحلة.
+              <h2 className="text-lg font-semibold mb-2">وكيل البناء الذكي</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed max-w-xs mb-6">
+                صف مشروعك وسيتولى الوكيل التخطيط والبناء والمراجعة تلقائياً.
               </p>
-              {/* Pipeline preview when idle */}
               <div className="flex items-center gap-3 text-xs">
                 {[
-                  { icon: BrainCircuit, label: "Claude يخطط",  color: "text-orange-500" },
-                  { icon: Code2,        label: "GPT يكتب الكود", color: "text-emerald-600" },
-                  { icon: ShieldCheck,  label: "Claude يراجع",  color: "text-orange-500" },
-                ].map(({ icon: Icon, label, color }, i) => (
+                  { Icon: BrainCircuit, label: "Claude يخطط",    color: "text-orange-500 bg-orange-500/10" },
+                  { Icon: Code2,        label: "GPT يكتب الكود", color: "text-emerald-600 bg-emerald-500/10" },
+                  { Icon: ShieldCheck,  label: "Claude يراجع",   color: "text-orange-500 bg-orange-500/10" },
+                ].map(({ Icon, label, color }, i) => (
                   <React.Fragment key={i}>
-                    {i > 0 && <span className="text-muted-foreground/30">→</span>}
-                    <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-muted/50">
-                      <Icon className={cn("h-3.5 w-3.5", color)} />
+                    {i > 0 && <span className="text-muted-foreground/30 text-base">→</span>}
+                    <div className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg", color.split(" ")[1])}>
+                      <Icon className={cn("h-3.5 w-3.5", color.split(" ")[0])} />
                       <span className="font-medium text-foreground/70">{label}</span>
                     </div>
                   </React.Fragment>
@@ -581,50 +576,41 @@ export default function BuilderPage() {
             </div>
           )}
 
-          {generatedFiles.length === 0 && isBuilding && (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <div className="relative mx-auto h-16 w-16 mb-4">
-                  <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
-                  <div className="relative h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Sparkles className="h-7 w-7 text-primary animate-pulse" />
-                  </div>
-                </div>
-                <p className="text-sm font-medium">{statusMsg || "جارٍ التحليل والتخطيط..."}</p>
-                {activePhaseModel && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    النموذج: <span className="font-mono text-primary">{activePhaseModel}</span>
-                  </p>
-                )}
-              </div>
+          {/* Planning skeleton — something to watch while Claude thinks */}
+          {filesMap.size === 0 && phase === "planning" && (
+            <PlanningSkeleton model={phases.planModel} />
+          )}
+
+          {/* Error (no files) */}
+          {filesMap.size === 0 && phase === "error" && (
+            <div className="flex-1 flex items-center justify-center text-destructive/70 text-sm gap-2">
+              <AlertCircle className="h-5 w-5" /> {errorMsg}
             </div>
           )}
 
-          {generatedFiles.length > 0 && (
+          {/* Code + preview area */}
+          {filesMap.size > 0 && (
             <>
-              {/* Tabs bar */}
+              {/* Tab bar */}
               <div className="flex-none flex items-center justify-between px-4 py-2 border-b border-border/50 bg-background/50">
                 <div className="flex items-center gap-1 bg-accent/50 rounded-lg p-0.5">
                   <button onClick={() => setActiveTab("code")}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
-                      activeTab === "code" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
-                    )}>
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                      activeTab === "code" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground")}>
                     <FileCode2 className="h-3.5 w-3.5" />الكود
+                    {isBuilding && <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
                   </button>
                   <button onClick={() => setActiveTab("preview")} disabled={!previewSrc}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
                       activeTab === "preview" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground",
-                      !previewSrc && "opacity-40 cursor-not-allowed"
-                    )}>
-                    <Eye className="h-3.5 w-3.5" />معاينة حية
+                      !previewSrc && "opacity-40 cursor-not-allowed")}>
+                    <Eye className="h-3.5 w-3.5" />معاينة
                   </button>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {activeFileContent && activeTab === "code" && (
-                    <Button onClick={() => handleDownloadFile(activeFileContent)} variant="ghost" size="sm"
+                  {activeFile && activeTab === "code" && (
+                    <Button onClick={() => handleDownloadFile(activeFile, activeContent)} variant="ghost" size="sm"
                       className="h-7 px-2 text-xs gap-1 rounded-lg">
                       <Download className="h-3 w-3" />تحميل
                     </Button>
@@ -637,30 +623,41 @@ export default function BuilderPage() {
                 </div>
               </div>
 
-              {/* File tabs strip */}
+              {/* File tab strip */}
               {activeTab === "code" && (
                 <div className="flex-none flex items-center gap-0.5 px-3 py-1.5 border-b border-border/30 overflow-x-auto bg-accent/20">
-                  {generatedFiles.map((f) => (
-                    <button key={f.path} onClick={() => setActiveFile(f.path)}
-                      className={cn(
-                        "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono whitespace-nowrap transition-all flex-none",
-                        activeFile === f.path
-                          ? "bg-background shadow-sm text-foreground border border-border/50"
-                          : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
-                      )}>
-                      <FileCode2 className="h-3 w-3" />
-                      {f.path}
-                    </button>
-                  ))}
+                  {Array.from(filesMap.keys()).map((path) => {
+                    const isDone    = completedFiles.has(path);
+                    const isCurrent = activeFile === path && !isDone && isBuilding;
+                    return (
+                      <button key={path} onClick={() => setActiveFile(path)}
+                        className={cn(
+                          "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono whitespace-nowrap transition-all flex-none",
+                          activeFile === path
+                            ? "bg-background shadow-sm text-foreground border border-border/50"
+                            : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                        )}>
+                        <FileCode2 className="h-3 w-3" />
+                        {path}
+                        {isCurrent && <Loader2 className="h-2.5 w-2.5 animate-spin opacity-70" />}
+                        {isDone && <CheckCircle2 className="h-2.5 w-2.5 text-emerald-500 opacity-70" />}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
-              {/* Code view */}
-              {activeTab === "code" && activeFileContent && (
+              {/* Code editor — live streaming */}
+              {activeTab === "code" && (
                 <div className="flex-1 overflow-auto bg-[#1e1e2e]">
                   <pre className="p-4 text-xs font-mono text-[#cdd6f4] leading-relaxed whitespace-pre-wrap break-all">
-                    <code>{activeFileContent.content}</code>
+                    <code>{activeContent}</code>
+                    {/* Blinking cursor while this file is being written */}
+                    {activeFile && !completedFiles.has(activeFile) && isBuilding && (
+                      <span className="inline-block w-[2px] h-3.5 bg-primary ml-0.5 align-middle animate-pulse" />
+                    )}
                   </pre>
+                  <div ref={codeEndRef} />
                 </div>
               )}
 
@@ -673,14 +670,11 @@ export default function BuilderPage() {
                 </div>
               )}
 
-              {/* Building status pill */}
+              {/* Floating status pill */}
               {isBuilding && (
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-primary text-primary-foreground text-xs px-4 py-2 rounded-full shadow-lg z-10">
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-primary/90 text-primary-foreground text-xs px-4 py-2 rounded-full shadow-lg z-10 backdrop-blur-sm">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   <span>{statusMsg}</span>
-                  {activePhaseModel && (
-                    <span className="opacity-70 font-mono">({activePhaseModel})</span>
-                  )}
                 </div>
               )}
             </>
