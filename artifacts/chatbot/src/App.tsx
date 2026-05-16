@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import ChatPage from "@/pages/chat";
+import BuilderPage from "@/pages/builder";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +19,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={ChatPage} />
+      <Route path="/builder" component={BuilderPage} />
       <Route component={NotFound} />
     </Switch>
   );

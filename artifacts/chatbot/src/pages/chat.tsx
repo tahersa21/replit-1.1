@@ -3,7 +3,8 @@ import type { ChatMessage } from "@workspace/api-client-react";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { EmptyState } from "@/components/chat/empty-state";
-import { BookOpen, ChevronDown } from "lucide-react";
+import { BookOpen, ChevronDown, Hammer } from "lucide-react";
+import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
   DropdownMenu,
@@ -228,6 +229,14 @@ export default function ChatPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Builder link */}
+            <Link href="/builder">
+              <Button variant="outline" size="sm" className="flex items-center gap-2 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all">
+                <Hammer className="h-3.5 w-3.5" />
+                <span className="font-medium text-sm">وكيل البناء</span>
+              </Button>
+            </Link>
+
             {/* Provider selector */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
