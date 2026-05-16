@@ -29,11 +29,6 @@ function startSSE(res: import("express").Response): void {
   res.flushHeaders();
 }
 
-// ── Per-provider model config for each phase ─────────────────────────────────
-//   Planning  → Claude (best at structured reasoning & architecture)
-//   Coding    → GPT   (best at producing clean code)
-//   Verifying → Claude (best at reviewing & critiquing)
-
 interface PhaseModels {
   planModel: string;
   codeModel: string;
@@ -53,7 +48,6 @@ const PHASE_MODELS: Record<"freemodel" | "xynera", PhaseModels> = {
   },
 };
 
-// ── OpenAI-compatible client ──────────────────────────────────────────────────
 function makeOpenAIClient(provider: "freemodel" | "xynera"): OpenAI {
   if (provider === "xynera") {
     return new OpenAI({ apiKey: process.env.XYNERA_API_KEY ?? "", baseURL: "https://www.xynera.vip/v1" });
@@ -61,79 +55,83 @@ function makeOpenAIClient(provider: "freemodel" | "xynera"): OpenAI {
   return new OpenAI({ apiKey: process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
 }
 
-// ── Anthropic via node:https (for FreeModel Claude) ───────────────────────────
-async function callAnthropicFreeModel(
-  model: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const bodyStr = JSON.stringify({
-      model,
-      max_tokens: 4096,
-      stream: false,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-    const bodyBuf = Buffer.from(bodyStr, "utf8");
-
-    const req = https.request(
-      {
-        hostname: "cc.freemodel.dev",
-        path: "/v1/messages",
-        method: "POST",
-        headers: {
-          "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json",
-          "Content-Length": bodyBuf.length,
-        },
-      },
-      (upstream) => {
-        let raw = "";
-        upstream.on("data", (chunk: Buffer) => { raw += chunk.toString("utf8"); });
-        upstream.on("end", () => {
-          try {
-            const parsed = JSON.parse(raw) as { content?: { type: string; text?: string }[]; error?: { message: string } };
-            if (parsed.error) { reject(new Error(parsed.error.message)); return; }
-            const text = parsed.content?.find((b) => b.type === "text")?.text ?? "";
-            resolve(text);
-          } catch (e) { reject(e); }
-        });
-        upstream.on("error", reject);
-      }
-    );
-    req.setTimeout(120_000, () => req.destroy(new Error("Anthropic request timeout")));
-    req.on("error", reject);
-    req.write(bodyBuf);
-    req.end();
-  });
-}
-
-// ── Unified callAI dispatcher ─────────────────────────────────────────────────
+// ── Non-streaming call (for planning & verification — need full JSON) ──────────
 async function callAI(
   provider: "freemodel" | "xynera",
   model: string,
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  // FreeModel Claude → dedicated Anthropic endpoint
+  // FreeModel Claude → Anthropic endpoint (non-streaming)
   if (provider === "freemodel" && model.startsWith("claude-")) {
-    return callAnthropicFreeModel(model, systemPrompt, userPrompt);
+    return new Promise((resolve, reject) => {
+      const bodyStr = JSON.stringify({
+        model, max_tokens: 4096, stream: false,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      });
+      const bodyBuf = Buffer.from(bodyStr, "utf8");
+      const req = https.request({
+        hostname: "cc.freemodel.dev", path: "/v1/messages", method: "POST",
+        headers: {
+          "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+          "Content-Length": bodyBuf.length,
+        },
+      }, (upstream) => {
+        let raw = "";
+        upstream.on("data", (c: Buffer) => { raw += c.toString("utf8"); });
+        upstream.on("end", () => {
+          try {
+            const p = JSON.parse(raw) as { content?: { type: string; text?: string }[]; error?: { message: string } };
+            if (p.error) { reject(new Error(p.error.message)); return; }
+            resolve(p.content?.find((b) => b.type === "text")?.text ?? "");
+          } catch (e) { reject(e); }
+        });
+        upstream.on("error", reject);
+      });
+      req.setTimeout(120_000, () => req.destroy(new Error("timeout")));
+      req.on("error", reject);
+      req.write(bodyBuf); req.end();
+    });
   }
-
-  // Everything else → OpenAI-compatible endpoint
+  // OpenAI-compatible
   const client = makeOpenAIClient(provider);
   const completion = await client.chat.completions.create({
-    model,
-    stream: false,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
+    model, stream: false,
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
     max_tokens: 4000,
   });
   return completion.choices[0]?.message?.content ?? "";
+}
+
+// ── STREAMING code generation — emits file_chunk events token-by-token ────────
+async function streamFileGeneration(
+  res: import("express").Response,
+  provider: "freemodel" | "xynera",
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  filePath: string
+): Promise<string> {
+  const client = makeOpenAIClient(provider);
+  let fullContent = "";
+
+  const stream = await client.chat.completions.create({
+    model, stream: true,
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+    max_tokens: 4000,
+  });
+
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content;
+    if (text) {
+      fullContent += text;
+      sseWrite(res, { type: "file_chunk", path: filePath, chunk: text });
+    }
+  }
+  return fullContent;
 }
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
@@ -169,23 +167,15 @@ No markdown, no explanation — just the JSON object.`;
 // ── Route ─────────────────────────────────────────────────────────────────────
 router.post("/builder/stream", async (req, res) => {
   const parsed = parseBuildRequest(req.body);
-  if (!parsed) {
-    res.status(400).json({ error: "Invalid request" });
-    return;
-  }
+  if (!parsed) { res.status(400).json({ error: "Invalid request" }); return; }
 
   const { prompt, provider = "freemodel" } = parsed;
   const phases = PHASE_MODELS[provider];
   startSSE(res);
 
   try {
-    // ── Phase 1: Planning with Claude ────────────────────────────────────────
-    sseWrite(res, {
-      type: "status",
-      message: "جارٍ تحليل المشروع ورسم الخطة...",
-      phase: "planning",
-      model: phases.planModel,
-    });
+    // ── Phase 1: Planning (Claude, non-streaming — need full JSON) ────────────
+    sseWrite(res, { type: "status", message: "جارٍ تحليل المشروع ورسم الخطة...", phase: "planning", model: phases.planModel });
 
     const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`);
 
@@ -202,32 +192,22 @@ router.post("/builder/stream", async (req, res) => {
       plan = JSON.parse(cleaned) as typeof plan;
     } catch {
       sseWrite(res, { type: "error", message: "فشل تحليل خطة البناء — حاول مرة أخرى." });
-      res.end();
-      return;
+      res.end(); return;
     }
 
     sseWrite(res, { type: "plan", plan });
 
-    // ── Phase 2: Code generation with GPT ────────────────────────────────────
+    // ── Phase 2: Code generation (GPT, STREAMING — tokens appear live) ────────
     const generatedFiles: { path: string; content: string }[] = [];
 
     for (const fileSpec of plan.files) {
-      sseWrite(res, {
-        type: "status",
-        message: `جارٍ إنشاء: ${fileSpec.path}`,
-        phase: "coding",
-        model: phases.codeModel,
-      });
+      sseWrite(res, { type: "status", message: `جارٍ كتابة: ${fileSpec.path}`, phase: "coding", model: phases.codeModel });
       sseWrite(res, { type: "file_start", path: fileSpec.path });
 
-      const context = generatedFiles
-        .map((f) => `// FILE: ${f.path}\n${f.content.slice(0, 400)}`)
-        .join("\n\n");
+      const context = generatedFiles.map((f) => `// FILE: ${f.path}\n${f.content.slice(0, 400)}`).join("\n\n");
 
-      const fileContent = await callAI(
-        provider,
-        phases.codeModel,
-        FILE_GENERATOR_SYSTEM,
+      const fileContent = await streamFileGeneration(
+        res, provider, phases.codeModel, FILE_GENERATOR_SYSTEM,
         `Project: ${plan.projectName}
 Description: ${plan.description}
 Tech stack: ${plan.techStack.join(", ")}
@@ -235,31 +215,24 @@ ${context ? `\nAlready generated (for reference):\n${context}\n` : ""}
 Generate the complete content for: ${fileSpec.path}
 File purpose: ${fileSpec.description}
 
-Output ONLY the raw file content, nothing else.`
+Output ONLY the raw file content, nothing else.`,
+        fileSpec.path
       );
 
       generatedFiles.push({ path: fileSpec.path, content: fileContent });
       sseWrite(res, { type: "file_done", path: fileSpec.path, content: fileContent });
     }
 
-    // ── Phase 3: Verification with Claude ────────────────────────────────────
-    sseWrite(res, {
-      type: "status",
-      message: "جارٍ مراجعة المشروع والتحقق من اكتماله...",
-      phase: "verifying",
-      model: phases.verifyModel,
-    });
+    // ── Phase 3: Verification (Claude, non-streaming — need full JSON) ────────
+    sseWrite(res, { type: "status", message: "جارٍ مراجعة المشروع...", phase: "verifying", model: phases.verifyModel });
 
-    const verifyPrompt = `Project: ${plan.projectName}
-Files generated:
-${generatedFiles.map((f) => `- ${f.path} (${f.content.length} chars)`).join("\n")}
+    const verifyText = await callAI(
+      provider, phases.verifyModel, VERIFIER_SYSTEM,
+      `Project: ${plan.projectName}
+Files: ${generatedFiles.map((f) => `${f.path} (${f.content.length} chars)`).join(", ")}
+First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`
+    );
 
-First file preview (index.html):
-${generatedFiles[0]?.content.slice(0, 600) ?? ""}
-
-Is this project complete and functional?`;
-
-    const verifyText = await callAI(provider, phases.verifyModel, VERIFIER_SYSTEM, verifyPrompt);
     let verification: { ok: boolean; notes: string } = { ok: true, notes: "تم البناء بنجاح ✓" };
     try {
       const cleaned = verifyText.replace(/^```[\w]*\n?/gm, "").replace(/```$/gm, "").trim();
@@ -270,8 +243,7 @@ Is this project complete and functional?`;
 
   } catch (err: unknown) {
     req.log.error({ err }, "Builder stream error");
-    const message = err instanceof Error ? err.message : "حدث خطأ داخلي";
-    sseWrite(res, { type: "error", message });
+    sseWrite(res, { type: "error", message: err instanceof Error ? err.message : "حدث خطأ داخلي" });
   } finally {
     res.end();
   }
