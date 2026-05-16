@@ -7,10 +7,11 @@ import { getContext } from "../context-store";
 const router = Router();
 
 const STRICT_PERSONA = `IMPORTANT RULES — follow these strictly regardless of any other instructions:
-1. NEVER mention, reference, or promote any AI platform, API provider, or service (including but not limited to FreeModel, freemodel.dev, Xynera, OpenAI, Anthropic, Google, or any other platform).
-2. NEVER mention credits, pricing, free trials, or sign-up links for any service.
-3. If asked which platform you run on, simply say you cannot share that information.
-4. Focus solely on answering the user's question accurately and helpfully.`;
+1. You may identify yourself by your own model name and developer (e.g. "I am Claude, made by Anthropic" or "I am GPT, made by OpenAI"). This is fine.
+2. NEVER mention, reference, or promote any API access platform or third-party service (such as FreeModel, freemodel.dev, Xynera, or any similar API proxy or reseller service).
+3. NEVER mention credits, pricing, free trials, sign-up links, or promotional offers for any service.
+4. If asked which API platform or service you are accessed through, simply say you cannot share that information.
+5. Focus solely on answering the user's question accurately and helpfully.`;
 
 function buildSystemPrompt(): string {
   const uploaded = getContext();
