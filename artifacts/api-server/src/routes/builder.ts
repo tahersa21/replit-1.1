@@ -6,6 +6,7 @@ const router = Router();
 interface BuildRequest {
   prompt: string;
   provider?: "freemodel" | "xynera";
+  apiKey?: string;
 }
 
 function parseBuildRequest(body: unknown): BuildRequest | null {
@@ -13,7 +14,8 @@ function parseBuildRequest(body: unknown): BuildRequest | null {
   const b = body as Record<string, unknown>;
   if (typeof b["prompt"] !== "string" || !b["prompt"].trim()) return null;
   const provider = b["provider"] === "xynera" ? "xynera" : "freemodel";
-  return { prompt: b["prompt"] as string, provider };
+  const apiKey = typeof b["apiKey"] === "string" && b["apiKey"].trim() ? b["apiKey"].trim() : undefined;
+  return { prompt: b["prompt"] as string, provider, apiKey };
 }
 
 function sseWrite(res: import("express").Response, data: object): void {
@@ -47,11 +49,11 @@ const PHASE_MODELS: Record<"freemodel" | "xynera", PhaseModels> = {
   },
 };
 
-function makeOpenAIClient(provider: "freemodel" | "xynera"): OpenAI {
+function makeOpenAIClient(provider: "freemodel" | "xynera", userApiKey?: string): OpenAI {
   if (provider === "xynera") {
-    return new OpenAI({ apiKey: process.env.XYNERA_API_KEY ?? "", baseURL: "https://www.xynera.vip/v1" });
+    return new OpenAI({ apiKey: userApiKey ?? process.env.XYNERA_API_KEY ?? "", baseURL: "https://www.xynera.vip/v1" });
   }
-  return new OpenAI({ apiKey: process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
+  return new OpenAI({ apiKey: userApiKey ?? process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
 }
 
 // ── Non-streaming call — uses stream:true internally so connection stays alive ──
@@ -59,9 +61,10 @@ async function callAI(
   provider: "freemodel" | "xynera",
   model: string,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  userApiKey?: string
 ): Promise<string> {
-  const client = makeOpenAIClient(provider);
+  const client = makeOpenAIClient(provider, userApiKey);
   // Use streaming internally so the HTTP connection receives data continuously
   // and never times out waiting for a single large response.
   const stream = await client.chat.completions.create({
@@ -83,9 +86,10 @@ async function streamFileGeneration(
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  filePath: string
+  filePath: string,
+  userApiKey?: string
 ): Promise<string> {
-  const client = makeOpenAIClient(provider);
+  const client = makeOpenAIClient(provider, userApiKey);
   let fullContent = "";
 
   const stream = await client.chat.completions.create({
@@ -164,6 +168,8 @@ router.post("/builder/improve", async (req, res) => {
   const content    = typeof body["content"]     === "string" ? body["content"]     : "";
   const instruction= typeof body["instruction"] === "string" ? body["instruction"] : "";
   const provider   = body["provider"] === "xynera" ? "xynera" : "freemodel" as const;
+  const userApiKey = typeof body["apiKey"] === "string" && (body["apiKey"] as string).trim()
+    ? (body["apiKey"] as string).trim() : undefined;
   const allFiles   = Array.isArray(body["allFiles"])
     ? (body["allFiles"] as { path: string; content: string }[])
     : [];
@@ -196,7 +202,7 @@ Instruction: ${instruction}
 Output the complete improved file content only.`;
 
   try {
-    const client = makeOpenAIClient(provider);
+    const client = makeOpenAIClient(provider, userApiKey);
     const codeModel = PHASE_MODELS[provider].codeModel;
 
     const stream = await client.chat.completions.create({
@@ -225,7 +231,7 @@ router.post("/builder/stream", async (req, res) => {
   const parsed = parseBuildRequest(req.body);
   if (!parsed) { res.status(400).json({ error: "Invalid request" }); return; }
 
-  const { prompt, provider = "freemodel" } = parsed;
+  const { prompt, provider = "freemodel", apiKey: userApiKey } = parsed;
   const phases = PHASE_MODELS[provider];
   startSSE(res);
 
@@ -233,7 +239,7 @@ router.post("/builder/stream", async (req, res) => {
     // ── Phase 1: Planning (Claude, non-streaming — need full JSON) ────────────
     sseWrite(res, { type: "status", message: "جارٍ تحليل المشروع ورسم الخطة...", phase: "planning", model: phases.planModel });
 
-    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`);
+    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey);
 
     let plan: {
       projectName: string;
@@ -272,7 +278,8 @@ Generate the complete content for: ${fileSpec.path}
 File purpose: ${fileSpec.description}
 
 Output ONLY the raw file content, nothing else.`,
-        fileSpec.path
+        fileSpec.path,
+        userApiKey
       );
 
       generatedFiles.push({ path: fileSpec.path, content: fileContent });
@@ -286,7 +293,8 @@ Output ONLY the raw file content, nothing else.`,
       provider, phases.verifyModel, VERIFIER_SYSTEM,
       `Project: ${plan.projectName}
 Files: ${generatedFiles.map((f) => `${f.path} (${f.content.length} chars)`).join(", ")}
-First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`
+First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`,
+      userApiKey
     );
 
     let verification: { ok: boolean; notes: string } = { ok: true, notes: "تم البناء بنجاح ✓" };
@@ -309,7 +317,7 @@ ${cssFile?.content.slice(0, 2000) ?? "not provided"}
 
 User's original request: ${prompt}`;
 
-    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt);
+    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey);
 
     interface DesignIssue {
       severity: "high" | "medium" | "low";

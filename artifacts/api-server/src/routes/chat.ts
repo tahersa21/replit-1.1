@@ -174,13 +174,18 @@ router.post("/chat/stream", async (req, res) => {
   }
 
   const { messages, model = "gpt-5.5", provider = "freemodel" } = parsed.data;
+  const rawBody = req.body as Record<string, unknown>;
+  const userApiKey = typeof rawBody["apiKey"] === "string" && rawBody["apiKey"].trim()
+    ? (rawBody["apiKey"] as string).trim()
+    : undefined;
+
   const systemPrompt = buildSystemPrompt();
 
   startSSE(res);
 
   try {
     if (provider === "xynera") {
-      const apiKey = process.env.XYNERA_API_KEY ?? "";
+      const apiKey = userApiKey ?? process.env.XYNERA_API_KEY ?? "";
       // Gemini models don't support streaming on Xynera (returns HTTP 500) → use non-streaming fallback
       if (model.startsWith("gemini-")) {
         await fetchGeminiXynera(res, apiKey, model, systemPrompt, messages);
@@ -189,7 +194,7 @@ router.post("/chat/stream", async (req, res) => {
       }
     } else {
       // FreeModel: Claude → Anthropic endpoint, GPT → OpenAI endpoint
-      const apiKey = process.env.FREEMODEL_API_KEY ?? "";
+      const apiKey = userApiKey ?? process.env.FREEMODEL_API_KEY ?? "";
       if (model.startsWith("claude-")) {
         await streamAnthropicFreeModel(res, apiKey, model, systemPrompt, messages);
       } else {

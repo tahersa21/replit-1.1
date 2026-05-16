@@ -3,7 +3,7 @@ import type { ChatMessage } from "@workspace/api-client-react";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { EmptyState } from "@/components/chat/empty-state";
-import { BookOpen, ChevronDown, Hammer } from "lucide-react";
+import { BookOpen, ChevronDown, Hammer, KeyRound, Eye, EyeOff } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -12,7 +12,39 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+
+const STORAGE_KEY_FM = "user_api_key_freemodel";
+const STORAGE_KEY_XY = "user_api_key_xynera";
+
+function loadKeys() {
+  return {
+    freemodel: localStorage.getItem(STORAGE_KEY_FM) ?? "",
+    xynera: localStorage.getItem(STORAGE_KEY_XY) ?? "",
+  };
+}
+
+function saveKeys(keys: { freemodel: string; xynera: string }) {
+  if (keys.freemodel.trim()) {
+    localStorage.setItem(STORAGE_KEY_FM, keys.freemodel.trim());
+  } else {
+    localStorage.removeItem(STORAGE_KEY_FM);
+  }
+  if (keys.xynera.trim()) {
+    localStorage.setItem(STORAGE_KEY_XY, keys.xynera.trim());
+  } else {
+    localStorage.removeItem(STORAGE_KEY_XY);
+  }
+}
 
 type ModelEntry = { id: string; label: string; description: string };
 type ModelGroup = { group: string; color: string; models: ModelEntry[] };
@@ -102,6 +134,22 @@ export default function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKeys, setApiKeys] = useState(loadKeys);
+  const [draftKeys, setDraftKeys] = useState(loadKeys);
+  const [showFmKey, setShowFmKey] = useState(false);
+  const [showXyKey, setShowXyKey] = useState(false);
+
+  const openSettings = () => { setDraftKeys(loadKeys()); setShowSettings(true); };
+  const saveSettings = () => {
+    saveKeys(draftKeys);
+    setApiKeys(draftKeys);
+    setShowSettings(false);
+    toast({ title: "تم الحفظ", description: "تم حفظ مفاتيح API بنجاح." });
+  };
+
+  const currentApiKey = apiKeys[selectedProvider] || undefined;
+
   const modelGroups = PROVIDER_MODEL_GROUPS[selectedProvider];
   const allModels = modelGroups.flatMap((g) => g.models);
   const currentModel = allModels.find((m) => m.id === selectedModel) ?? allModels[0];
@@ -135,6 +183,7 @@ export default function ChatPage() {
           messages: newMessages,
           model: selectedModel,
           provider: selectedProvider,
+          ...(currentApiKey ? { apiKey: currentApiKey } : {}),
         }),
         signal: abortRef.current.signal,
       });
@@ -214,6 +263,79 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-[100dvh] bg-background text-foreground overflow-hidden">
+      {/* ── API Key Settings Dialog ─────────────────────────────────────────── */}
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent className="sm:max-w-md rounded-2xl" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-right">
+              <KeyRound className="h-4 w-4" />
+              مفاتيح API
+            </DialogTitle>
+            <DialogDescription className="text-right">
+              أدخل مفتاح API الخاص بك للمنصة المختارة. يُحفظ محلياً في متصفحك فقط.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 pt-2">
+            {/* FreeModel */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2 text-sm font-medium">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+                FreeModel API Key
+              </Label>
+              <div className="relative">
+                <Input
+                  type={showFmKey ? "text" : "password"}
+                  placeholder="fm-xxxxxxxxxxxxxxxx"
+                  value={draftKeys.freemodel}
+                  onChange={(e) => setDraftKeys((k) => ({ ...k, freemodel: e.target.value }))}
+                  className="pr-3 pl-10 rounded-xl font-mono text-sm"
+                  dir="ltr"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowFmKey((v) => !v)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showFmKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">احصل على مفتاحك من api.freemodel.dev</p>
+            </div>
+
+            {/* Xynera */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2 text-sm font-medium">
+                <span className="h-2 w-2 rounded-full bg-violet-500 inline-block" />
+                Xynera API Key
+              </Label>
+              <div className="relative">
+                <Input
+                  type={showXyKey ? "text" : "password"}
+                  placeholder="xy-xxxxxxxxxxxxxxxx"
+                  value={draftKeys.xynera}
+                  onChange={(e) => setDraftKeys((k) => ({ ...k, xynera: e.target.value }))}
+                  className="pr-3 pl-10 rounded-xl font-mono text-sm"
+                  dir="ltr"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowXyKey((v) => !v)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showXyKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">احصل على مفتاحك من www.xynera.vip</p>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <Button onClick={saveSettings} className="flex-1 rounded-xl">حفظ المفاتيح</Button>
+              <Button variant="outline" onClick={() => setShowSettings(false)} className="rounded-xl">إلغاء</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <header className="flex-none px-6 py-4 border-b border-border/50 bg-background/80 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -236,6 +358,18 @@ export default function ChatPage() {
                 <span className="font-medium text-sm">وكيل البناء</span>
               </Button>
             </Link>
+
+            {/* API Key settings */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openSettings}
+              className={`flex items-center gap-1.5 rounded-xl border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all ${currentApiKey ? "border-emerald-400/60 text-emerald-600" : ""}`}
+              title="إعداد مفتاح API"
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              <span className="font-medium text-sm hidden sm:inline">{currentApiKey ? "Key ✓" : "API Key"}</span>
+            </Button>
 
             {/* Provider selector */}
             <DropdownMenu>
