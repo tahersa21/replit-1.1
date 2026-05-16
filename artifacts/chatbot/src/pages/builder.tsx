@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Link } from "wouter";
 import Editor from "@monaco-editor/react";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   FileCode2, Eye, Download, Sparkles, AlertCircle, ArrowLeft,
   BrainCircuit, Code2, ShieldCheck, Send, Wand2, RotateCcw,
   Palette, Type, Smartphone, MousePointer, Layers, Layout,
+  XCircle, Clock, TriangleAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -209,13 +210,37 @@ export default function BuilderPage() {
   const [improveInput, setImproveInput]     = useState("");
   const [isImproving, setIsImproving]       = useState(false);
   const [improveHistory, setImproveHistory] = useState<{ role: "user" | "ai"; text: string; file?: string }[]>([]);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [tokenWarnings, setTokenWarnings]   = useState<string[]>([]);
 
   const activeFileRef = useRef<string | null>(null);
+  const abortRef      = useRef<AbortController | null>(null);
+  const timerRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
   const currentProvider = PROVIDERS.find((p) => p.id === provider)!;
   const phases          = PHASE_MODELS[provider];
   const isBuilding      = ["planning","coding","verifying","design_review"].includes(phase);
+
+  // Start/stop elapsed timer with build state
+  useEffect(() => {
+    if (isBuilding) {
+      setElapsedSeconds(0);
+      timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+    } else {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [isBuilding]);
+
+  const cancelBuild = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setPhase("error");
+    setErrorMsg("تم إلغاء البناء من قِبل المستخدم.");
+  };
+
+  const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
   const generatedFiles  = Array.from(filesMap.entries()).map(([p, c]) => ({ path: p, content: c }));
   const activeContent   = activeFile ? (filesMap.get(activeFile) ?? "") : "";
 
@@ -224,13 +249,27 @@ export default function BuilderPage() {
     if (!prompt.trim() || isBuilding) return;
     setPlan(null); setFilesMap(new Map()); setActiveFile(null);
     activeFileRef.current = null; setVerification(null); setDesignReview(null);
-    setErrorMsg(""); setCompletedFiles(new Set());
+    setErrorMsg(""); setCompletedFiles(new Set()); setTokenWarnings([]);
     setPhase("planning"); setActiveTab("code"); setImproveHistory([]);
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    // Auto-cancel after 10 minutes
+    const autoCancel = setTimeout(() => {
+      ctrl.abort();
+      setErrorMsg("تجاوز البناء 10 دقائق — تم الإلغاء تلقائياً. جرّب مشروعاً أبسط أو استخدم مفتاح API الخاص بك.");
+      setPhase("error");
+    }, 600_000);
+
+    // Read apiKey from localStorage
+    const apiKey = localStorage.getItem(`user_api_key_${provider}`) || undefined;
 
     try {
       const response = await fetch("/api/builder/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, provider }),
+        body: JSON.stringify({ prompt, provider, ...(apiKey ? { apiKey } : {}) }),
+        signal: ctrl.signal,
       });
       if (!response.ok || !response.body) throw new Error("فشل الاتصال بالخادم");
       const reader = response.body.getReader();
@@ -274,6 +313,9 @@ export default function BuilderPage() {
                   if (msg.content !== undefined) setFilesMap((prev) => { const m = new Map(prev); m.set(msg.path!, msg.content!); return m; });
                   setCompletedFiles((prev) => new Set([...prev, msg.path!]));
                 } break;
+              case "token_limit":
+                if (msg.path) setTokenWarnings((prev) => [...prev, msg.path!]);
+                break;
               case "done":
                 setVerification(msg.verification ?? { ok: true, notes: "تم البناء بنجاح" });
                 if (msg.designReview) { setDesignReview(msg.designReview); setActiveTab("design"); }
@@ -286,6 +328,9 @@ export default function BuilderPage() {
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") { setErrorMsg("فشل الاتصال بالخادم."); setPhase("error"); }
+    } finally {
+      clearTimeout(autoCancel);
+      abortRef.current = null;
     }
   }, [prompt, provider, isBuilding]);
 
@@ -442,9 +487,21 @@ export default function BuilderPage() {
               onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) void handleBuild(); }}
               placeholder="صف المشروع..." disabled={isBuilding}
               className="w-full h-20 resize-none rounded-xl border border-border/60 bg-card/50 px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
-            <Button onClick={() => void handleBuild()} disabled={!prompt.trim() || isBuilding} className="w-full mt-2 rounded-xl gap-2">
-              {isBuilding ? <><Loader2 className="h-4 w-4 animate-spin" />جارٍ البناء...</> : <><Sparkles className="h-4 w-4" />ابنِ المشروع</>}
-            </Button>
+            {isBuilding ? (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+                  <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{fmtTime(elapsedSeconds)}</span>
+                  <span className="text-[10px] opacity-60">يُلغى تلقائياً عند 10 دقائق</span>
+                </div>
+                <Button variant="destructive" onClick={cancelBuild} className="w-full rounded-xl gap-2 h-8 text-xs">
+                  <XCircle className="h-3.5 w-3.5" />إلغاء البناء
+                </Button>
+              </div>
+            ) : (
+              <Button onClick={() => void handleBuild()} disabled={!prompt.trim()} className="w-full mt-2 rounded-xl gap-2">
+                <Sparkles className="h-4 w-4" />ابنِ المشروع
+              </Button>
+            )}
           </div>
 
           {/* Dynamic panel */}
@@ -452,6 +509,16 @@ export default function BuilderPage() {
             {statusMsg && isBuilding && (
               <div className="flex items-center gap-2 text-xs bg-primary/5 rounded-lg px-3 py-2 text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-none" />{statusMsg}
+              </div>
+            )}
+            {tokenWarnings.length > 0 && (
+              <div className="space-y-1">
+                {tokenWarnings.map((f) => (
+                  <div key={f} className="flex items-start gap-1.5 text-[10px] text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded-lg px-2.5 py-2 border border-amber-400/20">
+                    <TriangleAlert className="h-3 w-3 flex-none mt-0.5" />
+                    <span><span className="font-mono font-semibold">{f}</span> وصل لحد التوكن — قد يكون ناقصاً. استخدم "تحسين" لاستكماله.</span>
+                  </div>
+                ))}
               </div>
             )}
             {phase === "error" && (

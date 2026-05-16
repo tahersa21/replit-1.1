@@ -49,6 +49,17 @@ const PHASE_MODELS: Record<"freemodel" | "xynera", PhaseModels> = {
   },
 };
 
+// ── Timeout wrapper — rejects if promise takes longer than `ms` ────────────────
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`انتهت مهلة "${label}" بعد ${ms / 1000}ث`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 function makeOpenAIClient(provider: "freemodel" | "xynera", userApiKey?: string): OpenAI {
   if (provider === "xynera") {
     return new OpenAI({ apiKey: userApiKey ?? process.env.XYNERA_API_KEY ?? "", baseURL: "https://www.xynera.vip/v1" });
@@ -62,21 +73,26 @@ async function callAI(
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  userApiKey?: string
+  userApiKey?: string,
+  maxTokens = 2000,
+  timeoutMs = 90_000
 ): Promise<string> {
   const client = makeOpenAIClient(provider, userApiKey);
-  // Use streaming internally so the HTTP connection receives data continuously
-  // and never times out waiting for a single large response.
-  const stream = await client.chat.completions.create({
-    model, stream: true,
-    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-    max_tokens: 4000,
-  });
-  let result = "";
-  for await (const chunk of stream) {
-    result += chunk.choices[0]?.delta?.content ?? "";
+
+  async function run(): Promise<string> {
+    const stream = await client.chat.completions.create({
+      model, stream: true,
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+      max_tokens: maxTokens,
+    });
+    let result = "";
+    for await (const chunk of stream) {
+      result += chunk.choices[0]?.delta?.content ?? "";
+    }
+    return result;
   }
-  return result;
+
+  return withTimeout(run(), timeoutMs, model);
 }
 
 // ── STREAMING code generation — emits file_chunk events token-by-token ────────
@@ -90,22 +106,40 @@ async function streamFileGeneration(
   userApiKey?: string
 ): Promise<string> {
   const client = makeOpenAIClient(provider, userApiKey);
-  let fullContent = "";
 
-  const stream = await client.chat.completions.create({
-    model, stream: true,
-    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-    max_tokens: 4000,
-  });
+  async function run(): Promise<string> {
+    const stream = await client.chat.completions.create({
+      model, stream: true,
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+      max_tokens: 6000,
+    });
 
-  for await (const chunk of stream) {
-    const text = chunk.choices[0]?.delta?.content;
-    if (text) {
-      fullContent += text;
-      sseWrite(res, { type: "file_chunk", path: filePath, chunk: text });
+    let fullContent = "";
+    let hitTokenLimit = false;
+
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content;
+      if (text) {
+        fullContent += text;
+        sseWrite(res, { type: "file_chunk", path: filePath, chunk: text });
+      }
+      if (chunk.choices[0]?.finish_reason === "length") {
+        hitTokenLimit = true;
+      }
     }
+
+    if (hitTokenLimit) {
+      sseWrite(res, {
+        type: "token_limit",
+        path: filePath,
+        message: `⚠️ الملف "${filePath}" وصل لحد التوكن — الكود قد يكون ناقصاً`,
+      });
+    }
+
+    return fullContent;
   }
-  return fullContent;
+
+  return withTimeout(run(), 120_000, `توليد ${filePath}`);
 }
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
@@ -239,7 +273,7 @@ router.post("/builder/stream", async (req, res) => {
     // ── Phase 1: Planning (Claude, non-streaming — need full JSON) ────────────
     sseWrite(res, { type: "status", message: "جارٍ تحليل المشروع ورسم الخطة...", phase: "planning", model: phases.planModel });
 
-    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey);
+    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey, 2000, 90_000);
 
     let plan: {
       projectName: string;
@@ -294,7 +328,7 @@ Output ONLY the raw file content, nothing else.`,
       `Project: ${plan.projectName}
 Files: ${generatedFiles.map((f) => `${f.path} (${f.content.length} chars)`).join(", ")}
 First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`,
-      userApiKey
+      userApiKey, 500, 60_000
     );
 
     let verification: { ok: boolean; notes: string } = { ok: true, notes: "تم البناء بنجاح ✓" };
@@ -317,7 +351,7 @@ ${cssFile?.content.slice(0, 2000) ?? "not provided"}
 
 User's original request: ${prompt}`;
 
-    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey);
+    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey, 2000, 90_000);
 
     interface DesignIssue {
       severity: "high" | "medium" | "low";
