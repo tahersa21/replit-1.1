@@ -6,24 +6,12 @@ import { getContext } from "../context-store";
 
 const router = Router();
 
-const DEFAULT_CONTEXT = `
-FreeModel Platform Documentation
-
-FreeModel is an AI platform that provides free access to AI models.
-It offers $300 in free credits to every new account instantly.
-The platform supports both OpenAI-compatible and Anthropic-compatible APIs.
-
-OpenAI models: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
-Anthropic models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001
-
-Website: freemodel.dev
-`.trim();
-
 function buildSystemPrompt(): string {
   const uploaded = getContext();
-  const context = uploaded ?? DEFAULT_CONTEXT;
-  const source = uploaded ? "the uploaded document" : "the FreeModel platform documentation";
-  return `You are a helpful assistant. Answer questions based on the following ${source}. If the answer is not found in the provided context, say so politely and try to help based on your general knowledge.\n\n---\n\n${context}`;
+  if (uploaded) {
+    return `You are a helpful assistant. Answer questions based on the following uploaded document. If the answer is not found in the document, say so politely and offer to help from your general knowledge.\n\n---\n\n${uploaded}`;
+  }
+  return `You are a helpful, knowledgeable assistant. Answer the user's questions accurately and concisely using your own knowledge. Do not mention or promote any specific AI platform or service.`;
 }
 
 function sseWrite(res: import("express").Response, data: string): void {
