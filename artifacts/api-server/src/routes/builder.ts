@@ -1,6 +1,5 @@
 import { Router } from "express";
 import OpenAI from "openai";
-import https from "https";
 
 const router = Router();
 
@@ -37,14 +36,14 @@ interface PhaseModels {
 
 const PHASE_MODELS: Record<"freemodel" | "xynera", PhaseModels> = {
   freemodel: {
-    planModel:   "claude-opus-4-7",
+    planModel:   "gpt-4.1",
     codeModel:   "gpt-5.5",
-    verifyModel: "claude-sonnet-4-6",
+    verifyModel: "gpt-4.1",
   },
   xynera: {
-    planModel:   "claude-opus-4-7",
+    planModel:   "gpt-4.1",
     codeModel:   "gpt-5.5",
-    verifyModel: "claude-4-6-sonnet",
+    verifyModel: "gpt-4.1",
   },
 };
 
@@ -55,55 +54,26 @@ function makeOpenAIClient(provider: "freemodel" | "xynera"): OpenAI {
   return new OpenAI({ apiKey: process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
 }
 
-// ── Non-streaming call (for planning & verification — need full JSON) ──────────
+// ── Non-streaming call — uses stream:true internally so connection stays alive ──
 async function callAI(
   provider: "freemodel" | "xynera",
   model: string,
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  // FreeModel Claude → Anthropic endpoint (non-streaming)
-  if (provider === "freemodel" && model.startsWith("claude-")) {
-    return new Promise((resolve, reject) => {
-      const bodyStr = JSON.stringify({
-        model, max_tokens: 4096, stream: false,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      });
-      const bodyBuf = Buffer.from(bodyStr, "utf8");
-      const req = https.request({
-        hostname: "cc.freemodel.dev", path: "/v1/messages", method: "POST",
-        headers: {
-          "x-api-key": process.env.FREEMODEL_API_KEY ?? "",
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json",
-          "Content-Length": bodyBuf.length,
-        },
-      }, (upstream) => {
-        let raw = "";
-        upstream.on("data", (c: Buffer) => { raw += c.toString("utf8"); });
-        upstream.on("end", () => {
-          try {
-            const p = JSON.parse(raw) as { content?: { type: string; text?: string }[]; error?: { message: string } };
-            if (p.error) { reject(new Error(p.error.message)); return; }
-            resolve(p.content?.find((b) => b.type === "text")?.text ?? "");
-          } catch (e) { reject(e); }
-        });
-        upstream.on("error", reject);
-      });
-      req.setTimeout(120_000, () => req.destroy(new Error("timeout")));
-      req.on("error", reject);
-      req.write(bodyBuf); req.end();
-    });
-  }
-  // OpenAI-compatible
   const client = makeOpenAIClient(provider);
-  const completion = await client.chat.completions.create({
-    model, stream: false,
+  // Use streaming internally so the HTTP connection receives data continuously
+  // and never times out waiting for a single large response.
+  const stream = await client.chat.completions.create({
+    model, stream: true,
     messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
     max_tokens: 4000,
   });
-  return completion.choices[0]?.message?.content ?? "";
+  let result = "";
+  for await (const chunk of stream) {
+    result += chunk.choices[0]?.delta?.content ?? "";
+  }
+  return result;
 }
 
 // ── STREAMING code generation — emits file_chunk events token-by-token ────────
