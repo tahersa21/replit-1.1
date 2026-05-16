@@ -49,16 +49,6 @@ const PHASE_MODELS: Record<"freemodel" | "xynera", PhaseModels> = {
   },
 };
 
-// ── Timeout wrapper — rejects if promise takes longer than `ms` ────────────────
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`انتهت مهلة "${label}" بعد ${ms / 1000}ث`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer)) as Promise<T>;
-}
 
 function makeOpenAIClient(provider: "freemodel" | "xynera", userApiKey?: string): OpenAI {
   if (provider === "xynera") {
@@ -67,35 +57,31 @@ function makeOpenAIClient(provider: "freemodel" | "xynera", userApiKey?: string)
   return new OpenAI({ apiKey: userApiKey ?? process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
 }
 
-// ── Non-streaming call — uses stream:true internally so connection stays alive ──
+// ── Non-streaming call — uses stream:true so the connection stays alive ────────
 async function callAI(
   provider: "freemodel" | "xynera",
   model: string,
   systemPrompt: string,
   userPrompt: string,
   userApiKey?: string,
-  maxTokens = 2000,
-  timeoutMs = 90_000
+  maxTokens = 2000
 ): Promise<string> {
   const client = makeOpenAIClient(provider, userApiKey);
-
-  async function run(): Promise<string> {
-    const stream = await client.chat.completions.create({
-      model, stream: true,
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-      max_tokens: maxTokens,
-    });
-    let result = "";
-    for await (const chunk of stream) {
-      result += chunk.choices[0]?.delta?.content ?? "";
-    }
-    return result;
+  const stream = await client.chat.completions.create({
+    model, stream: true,
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+    max_tokens: maxTokens,
+  });
+  let result = "";
+  for await (const chunk of stream) {
+    result += chunk.choices[0]?.delta?.content ?? "";
   }
-
-  return withTimeout(run(), timeoutMs, model);
+  return result;
 }
 
-// ── STREAMING code generation — emits file_chunk events token-by-token ────────
+// ── STREAMING code generation — emits SSE events token-by-token ───────────────
+// Runs independently per file; catches its own errors so parallel siblings
+// are not affected. Returns "" on failure (file_error event is emitted instead).
 async function streamFileGeneration(
   res: import("express").Response,
   provider: "freemodel" | "xynera",
@@ -105,9 +91,8 @@ async function streamFileGeneration(
   filePath: string,
   userApiKey?: string
 ): Promise<string> {
-  const client = makeOpenAIClient(provider, userApiKey);
-
-  async function run(): Promise<string> {
+  try {
+    const client = makeOpenAIClient(provider, userApiKey);
     const stream = await client.chat.completions.create({
       model, stream: true,
       messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
@@ -118,6 +103,9 @@ async function streamFileGeneration(
     let hitTokenLimit = false;
 
     for await (const chunk of stream) {
+      // Stop streaming if client disconnected (aborted from frontend)
+      if (res.writableEnded) break;
+
       const text = chunk.choices[0]?.delta?.content;
       if (text) {
         fullContent += text;
@@ -128,18 +116,26 @@ async function streamFileGeneration(
       }
     }
 
-    if (hitTokenLimit) {
+    if (hitTokenLimit && !res.writableEnded) {
       sseWrite(res, {
         type: "token_limit",
         path: filePath,
-        message: `⚠️ الملف "${filePath}" وصل لحد التوكن — الكود قد يكون ناقصاً`,
+        message: `⚠️ "${filePath}" وصل لحد التوكن — الكود قد يكون ناقصاً. استخدم "تحسين" لاستكماله.`,
       });
     }
 
     return fullContent;
+  } catch (err) {
+    // Per-file error: notify frontend but don't crash the whole build
+    if (!res.writableEnded) {
+      sseWrite(res, {
+        type: "file_error",
+        path: filePath,
+        message: err instanceof Error ? err.message : "خطأ غير معروف",
+      });
+    }
+    return "";
   }
-
-  return withTimeout(run(), 120_000, `توليد ${filePath}`);
 }
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
@@ -273,7 +269,7 @@ router.post("/builder/stream", async (req, res) => {
     // ── Phase 1: Planning (Claude, non-streaming — need full JSON) ────────────
     sseWrite(res, { type: "status", message: "جارٍ تحليل المشروع ورسم الخطة...", phase: "planning", model: phases.planModel });
 
-    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey, 2000, 90_000);
+    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey, 2000);
 
     let plan: {
       projectName: string;
@@ -293,32 +289,55 @@ router.post("/builder/stream", async (req, res) => {
 
     sseWrite(res, { type: "plan", plan });
 
-    // ── Phase 2: Code generation (GPT, STREAMING — tokens appear live) ────────
-    const generatedFiles: { path: string; content: string }[] = [];
+    // ── Phase 2: Parallel code generation ─────────────────────────────────────
+    // All files are started simultaneously. Each file call is independent and
+    // catches its own errors, so one failing file never blocks the others.
+    // The SSE stream receives interleaved chunks from all files; the frontend
+    // identifies each chunk by its `path` field.
+    sseWrite(res, {
+      type: "status",
+      message: `جارٍ كتابة ${plan.files.length} ملفات بالتوازي...`,
+      phase: "coding",
+      model: phases.codeModel,
+    });
 
-    for (const fileSpec of plan.files) {
-      sseWrite(res, { type: "status", message: `جارٍ كتابة: ${fileSpec.path}`, phase: "coding", model: phases.codeModel });
+    // Context: each file receives a full overview of all sibling files so it
+    // can produce compatible imports/links without waiting for them to finish.
+    const projectOverview = plan.files
+      .map((f) => `- ${f.path}: ${f.description}`)
+      .join("\n");
+
+    const filePromises = plan.files.map(async (fileSpec) => {
       sseWrite(res, { type: "file_start", path: fileSpec.path });
 
-      const context = generatedFiles.map((f) => `// FILE: ${f.path}\n${f.content.slice(0, 400)}`).join("\n\n");
-
-      const fileContent = await streamFileGeneration(
+      const content = await streamFileGeneration(
         res, provider, phases.codeModel, FILE_GENERATOR_SYSTEM,
         `Project: ${plan.projectName}
 Description: ${plan.description}
 Tech stack: ${plan.techStack.join(", ")}
-${context ? `\nAlready generated (for reference):\n${context}\n` : ""}
-Generate the complete content for: ${fileSpec.path}
+
+All project files (generate-aware context — these run in parallel):
+${projectOverview}
+
+Your task: generate the complete content for "${fileSpec.path}"
 File purpose: ${fileSpec.description}
 
-Output ONLY the raw file content, nothing else.`,
+IMPORTANT: Write complete, self-consistent code that works with the other files listed above.
+Output ONLY the raw file content — no markdown, no explanation.`,
         fileSpec.path,
         userApiKey
       );
 
-      generatedFiles.push({ path: fileSpec.path, content: fileContent });
-      sseWrite(res, { type: "file_done", path: fileSpec.path, content: fileContent });
-    }
+      sseWrite(res, { type: "file_done", path: fileSpec.path, content });
+      return { path: fileSpec.path, content };
+    });
+
+    // allSettled: even if some files fail, collect successful ones for verify/design
+    const results = await Promise.allSettled(filePromises);
+    const generatedFiles = results
+      .filter((r): r is PromiseFulfilledResult<{ path: string; content: string }> =>
+        r.status === "fulfilled" && r.value.content.length > 0)
+      .map((r) => r.value);
 
     // ── Phase 3: Code verification ────────────────────────────────────────────
     sseWrite(res, { type: "status", message: "جارٍ مراجعة الكود...", phase: "verifying", model: phases.verifyModel });
@@ -328,7 +347,7 @@ Output ONLY the raw file content, nothing else.`,
       `Project: ${plan.projectName}
 Files: ${generatedFiles.map((f) => `${f.path} (${f.content.length} chars)`).join(", ")}
 First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`,
-      userApiKey, 500, 60_000
+      userApiKey, 500
     );
 
     let verification: { ok: boolean; notes: string } = { ok: true, notes: "تم البناء بنجاح ✓" };
@@ -351,7 +370,7 @@ ${cssFile?.content.slice(0, 2000) ?? "not provided"}
 
 User's original request: ${prompt}`;
 
-    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey, 2000, 90_000);
+    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey, 2000);
 
     interface DesignIssue {
       severity: "high" | "medium" | "low";

@@ -302,7 +302,8 @@ export default function BuilderPage() {
               case "file_start":
                 if (msg.path) {
                   setFilesMap((prev) => { const m = new Map(prev); if (!m.has(msg.path!)) m.set(msg.path!, ""); return m; });
-                  activeFileRef.current = msg.path!; setActiveFile(msg.path!);
+                  // In parallel mode many files start at once — only set active on the first one
+                  if (!activeFileRef.current) { activeFileRef.current = msg.path!; setActiveFile(msg.path!); }
                 } break;
               case "file_chunk":
                 if (msg.path && msg.chunk)
@@ -315,6 +316,14 @@ export default function BuilderPage() {
                 } break;
               case "token_limit":
                 if (msg.path) setTokenWarnings((prev) => [...prev, msg.path!]);
+                break;
+              case "file_error":
+                // A single file failed in parallel mode — mark it as done (empty) so the
+                // build can still proceed with the remaining files
+                if (msg.path) {
+                  setCompletedFiles((prev) => new Set([...prev, msg.path!]));
+                  setTokenWarnings((prev) => [...prev, `${msg.path!} (فشل: ${msg.message ?? "خطأ"})`]);
+                }
                 break;
               case "done":
                 setVerification(msg.verification ?? { ok: true, notes: "تم البناء بنجاح" });
