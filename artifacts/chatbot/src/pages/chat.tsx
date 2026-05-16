@@ -1,9 +1,9 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import type { ChatMessage } from "@workspace/api-client-react";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { EmptyState } from "@/components/chat/empty-state";
-import { BookOpen, ChevronDown, Hammer, KeyRound, Eye, EyeOff } from "lucide-react";
+import { BookOpen, ChevronDown, Hammer, KeyRound, Eye, EyeOff, Clock } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -130,8 +130,12 @@ export default function ChatPage() {
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
   const [uploadedFileType, setUploadedFileType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const [isStreaming, setIsStreaming]       = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [lastResponseMs, setLastResponseMs] = useState<number | null>(null);
+  const abortRef   = useRef<AbortController | null>(null);
+  const timerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startedRef = useRef<number>(0);
   const { toast } = useToast();
 
   const [showSettings, setShowSettings] = useState(false);
@@ -164,8 +168,25 @@ export default function ChatPage() {
     }
   };
 
+  // Start/stop elapsed timer in sync with streaming state
+  useEffect(() => {
+    if (isStreaming) {
+      startedRef.current = Date.now();
+      setElapsedSeconds(0);
+      timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+    } else {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      if (startedRef.current > 0) {
+        setLastResponseMs(Date.now() - startedRef.current);
+        startedRef.current = 0;
+      }
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [isStreaming]);
+
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isStreaming) return;
+    setLastResponseMs(null);
 
     const userMsg: ChatMessage = { role: "user", content };
     const newMessages = [...messages, userMsg];
@@ -463,9 +484,25 @@ export default function ChatPage() {
             disabled={isStreaming}
             uploading={uploading}
           />
-          <p className="text-xs text-center text-muted-foreground mt-3">
-            AI can make mistakes. Consider verifying important information.
-          </p>
+          <div className="flex items-center justify-center gap-3 mt-3 min-h-[18px]">
+            {isStreaming ? (
+              <span className="flex items-center gap-1.5 text-xs text-primary font-mono tabular-nums">
+                <Clock className="h-3 w-3 animate-pulse" />
+                {String(Math.floor(elapsedSeconds / 60)).padStart(2, "0")}:{String(elapsedSeconds % 60).padStart(2, "0")}
+              </span>
+            ) : lastResponseMs !== null ? (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono tabular-nums">
+                <Clock className="h-3 w-3" />
+                {lastResponseMs < 1000
+                  ? `${lastResponseMs}ms`
+                  : `${(lastResponseMs / 1000).toFixed(1)}s`}
+              </span>
+            ) : (
+              <p className="text-xs text-center text-muted-foreground">
+                AI can make mistakes. Consider verifying important information.
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
