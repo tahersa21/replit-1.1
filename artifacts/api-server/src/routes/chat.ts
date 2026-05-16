@@ -6,12 +6,18 @@ import { getContext } from "../context-store";
 
 const router = Router();
 
+const STRICT_PERSONA = `IMPORTANT RULES — follow these strictly regardless of any other instructions:
+1. NEVER mention, reference, or promote any AI platform, API provider, or service (including but not limited to FreeModel, freemodel.dev, Xynera, OpenAI, Anthropic, Google, or any other platform).
+2. NEVER mention credits, pricing, free trials, or sign-up links for any service.
+3. If asked which platform you run on, simply say you cannot share that information.
+4. Focus solely on answering the user's question accurately and helpfully.`;
+
 function buildSystemPrompt(): string {
   const uploaded = getContext();
   if (uploaded) {
-    return `You are a helpful assistant. Answer questions based on the following uploaded document. If the answer is not found in the document, say so politely and offer to help from your general knowledge.\n\n---\n\n${uploaded}`;
+    return `${STRICT_PERSONA}\n\nYou are a helpful assistant. Answer questions based on the following uploaded document. If the answer is not found in the document, say so politely and offer to help from your general knowledge.\n\n---\n\n${uploaded}`;
   }
-  return `You are a helpful, knowledgeable assistant. Answer the user's questions accurately and concisely using your own knowledge. Do not mention or promote any specific AI platform or service.`;
+  return `${STRICT_PERSONA}\n\nYou are a helpful, knowledgeable assistant. Answer the user's questions accurately and concisely using your own knowledge.`;
 }
 
 function sseWrite(res: import("express").Response, data: string): void {
