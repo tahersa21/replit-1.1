@@ -212,6 +212,7 @@ export default function BuilderPage() {
   const [improveHistory, setImproveHistory] = useState<{ role: "user" | "ai"; text: string; file?: string }[]>([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [tokenWarnings, setTokenWarnings]   = useState<string[]>([]);
+  const [contracts, setContracts]           = useState<{ path: string; contract: string }[]>([]);
 
   const activeFileRef = useRef<string | null>(null);
   const abortRef      = useRef<AbortController | null>(null);
@@ -249,7 +250,7 @@ export default function BuilderPage() {
     if (!prompt.trim() || isBuilding) return;
     setPlan(null); setFilesMap(new Map()); setActiveFile(null);
     activeFileRef.current = null; setVerification(null); setDesignReview(null);
-    setErrorMsg(""); setCompletedFiles(new Set()); setTokenWarnings([]);
+    setErrorMsg(""); setCompletedFiles(new Set()); setTokenWarnings([]); setContracts([]);
     setPhase("planning"); setActiveTab("code"); setImproveHistory([]);
 
     const ctrl = new AbortController();
@@ -289,6 +290,7 @@ export default function BuilderPage() {
               verification?: { ok: boolean; notes: string };
               designReview?: DesignReview;
               files?: { path: string; content: string }[];
+              contracts?: { path: string; contract: string }[];
             };
             switch (msg.type) {
               case "status":
@@ -316,6 +318,9 @@ export default function BuilderPage() {
                 } break;
               case "token_limit":
                 if (msg.path) setTokenWarnings((prev) => [...prev, msg.path!]);
+                break;
+              case "contracts":
+                if (Array.isArray(msg.contracts)) setContracts(msg.contracts as { path: string; contract: string }[]);
                 break;
               case "file_error":
                 // A single file failed in parallel mode — mark it as done (empty) so the
@@ -519,6 +524,22 @@ export default function BuilderPage() {
               <div className="flex items-center gap-2 text-xs bg-primary/5 rounded-lg px-3 py-2 text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-none" />{statusMsg}
               </div>
+            )}
+            {contracts.length > 0 && (
+              <details className="group">
+                <summary className="cursor-pointer text-[10px] text-muted-foreground hover:text-foreground select-none list-none flex items-center gap-1.5 px-1 py-0.5">
+                  <span className="group-open:rotate-90 transition-transform inline-block">›</span>
+                  عقود الملفات البينية ({contracts.length} ملف)
+                </summary>
+                <div className="mt-1 space-y-1">
+                  {contracts.map((c) => (
+                    <div key={c.path} className="text-[10px] bg-muted/50 rounded px-2 py-1.5 border border-border/50">
+                      <span className="font-mono font-semibold text-primary">{c.path}</span>
+                      <span className="text-muted-foreground ml-2">{c.contract}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
             )}
             {tokenWarnings.length > 0 && (
               <div className="space-y-1">

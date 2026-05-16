@@ -79,7 +79,30 @@ async function callAI(
   return result;
 }
 
-// ── STREAMING code generation — emits SSE events token-by-token ───────────────
+// ── Phase 2a: Generate a lightweight interface contract for one file ──────────
+// Fast non-streaming call — returns a single line describing what this file
+// defines (IDs, CSS classes, JS functions) so parallel siblings know exactly
+// what names to reference when they generate their own code.
+async function generateInterface(
+  provider: "freemodel" | "xynera",
+  model: string,
+  fileSpec: { path: string; description: string },
+  projectName: string,
+  projectOverview: string,
+  userApiKey?: string
+): Promise<string> {
+  try {
+    return await callAI(
+      provider, model, INTERFACE_SYSTEM,
+      `Project: ${projectName}\nAll project files:\n${projectOverview}\n\nGenerate the interface contract for: ${fileSpec.path}\nPurpose: ${fileSpec.description}`,
+      userApiKey, 150
+    );
+  } catch {
+    return `(contract unavailable for ${fileSpec.path})`;
+  }
+}
+
+// ── Phase 2b: STREAMING code generation — emits SSE events token-by-token ─────
 // Runs independently per file; catches its own errors so parallel siblings
 // are not affected. Returns "" on failure (file_error event is emitted instead).
 async function streamFileGeneration(
@@ -154,6 +177,19 @@ Output ONLY valid JSON (no markdown fences, no explanation) in this exact format
 }
 Rules: max 8 files, HTML/CSS/JS only (no build tools), files must run directly in browser.`;
 
+// Phase 2a: Generate a tiny "interface contract" for each file.
+// This tells sibling files exactly what IDs, class names, CSS variables,
+// and JS functions this file will define — so they can reference them correctly.
+const INTERFACE_SYSTEM = `You are a web developer creating a concise interface contract for a file.
+List ONLY what this file DEFINES that other files can USE. Be extremely concise.
+
+Format by file type:
+HTML → "ids: <id list> | classes: <class list> | forms: <form ids>"
+CSS  → "vars: --name:value list | classes: .class list"
+JS   → "fns: fnName() list | globals: varName list | events: eventName list"
+
+Output ONE LINE only. No code, no explanation, no markdown.`;
+
 const FILE_GENERATOR_SYSTEM = `You are an expert web developer writing complete production-ready code.
 Rules:
 - Output ONLY raw file content — no markdown fences, no explanation whatsoever
@@ -161,7 +197,7 @@ Rules:
 - HTML: modern professional design, link to style.css and script.js
 - CSS: beautiful design with CSS variables, responsive layout
 - JS: complete logic, no external dependencies unless CDN links are in HTML
-- All files must work together as one cohesive app
+- All files must work together as one cohesive app — use the EXACT ids, classes, and function names from the interface contracts
 - Use Arabic UI text when the user prompt is in Arabic`;
 
 const VERIFIER_SYSTEM = `You are a senior code reviewer. Review the provided project files and output ONLY valid JSON:
@@ -289,11 +325,47 @@ router.post("/builder/stream", async (req, res) => {
 
     sseWrite(res, { type: "plan", plan });
 
-    // ── Phase 2: Parallel code generation ─────────────────────────────────────
-    // All files are started simultaneously. Each file call is independent and
-    // catches its own errors, so one failing file never blocks the others.
-    // The SSE stream receives interleaved chunks from all files; the frontend
-    // identifies each chunk by its `path` field.
+    // ── Phase 2a: Interface contracts (fast, parallel) ────────────────────────
+    // Each file generates a one-line "interface spec" describing exactly what
+    // it DEFINES — HTML element IDs/classes, CSS variables/selectors, JS
+    // function names. These contracts are then fed to Phase 2b so every file
+    // knows the exact names used by its siblings, preventing class/ID mismatches.
+    sseWrite(res, {
+      type: "status",
+      message: `جارٍ بناء العقود البينية للملفات...`,
+      phase: "coding",
+      model: phases.planModel,
+    });
+
+    const projectOverview = plan.files
+      .map((f) => `- ${f.path}: ${f.description}`)
+      .join("\n");
+
+    const contractResults = await Promise.allSettled(
+      plan.files.map(async (fileSpec) => {
+        const contract = await generateInterface(
+          provider, phases.planModel, fileSpec,
+          plan.projectName, projectOverview, userApiKey
+        );
+        return { path: fileSpec.path, contract };
+      })
+    );
+
+    // Build a shared cross-file context from all contracts
+    const contracts = contractResults
+      .filter((r): r is PromiseFulfilledResult<{ path: string; contract: string }> =>
+        r.status === "fulfilled")
+      .map((r) => r.value);
+
+    // Emit contracts to frontend so user can see the shared interface
+    if (!res.writableEnded) {
+      sseWrite(res, { type: "contracts", contracts });
+    }
+
+    // ── Phase 2b: Full code generation (streaming, parallel) ─────────────────
+    // Every file now has the complete interface contracts of ALL siblings,
+    // so it can use the exact IDs, class names, CSS variables and function
+    // names without guessing — all files stay consistent with each other.
     sseWrite(res, {
       type: "status",
       message: `جارٍ كتابة ${plan.files.length} ملفات بالتوازي...`,
@@ -301,13 +373,13 @@ router.post("/builder/stream", async (req, res) => {
       model: phases.codeModel,
     });
 
-    // Context: each file receives a full overview of all sibling files so it
-    // can produce compatible imports/links without waiting for them to finish.
-    const projectOverview = plan.files
-      .map((f) => `- ${f.path}: ${f.description}`)
-      .join("\n");
-
     const filePromises = plan.files.map(async (fileSpec) => {
+      // Contracts of sibling files (exclude this file's own contract)
+      const siblingContracts = contracts
+        .filter((c) => c.path !== fileSpec.path)
+        .map((c) => `  ${c.path}: ${c.contract}`)
+        .join("\n");
+
       sseWrite(res, { type: "file_start", path: fileSpec.path });
 
       const content = await streamFileGeneration(
@@ -316,13 +388,15 @@ router.post("/builder/stream", async (req, res) => {
 Description: ${plan.description}
 Tech stack: ${plan.techStack.join(", ")}
 
-All project files (generate-aware context — these run in parallel):
+All project files:
 ${projectOverview}
+
+Sibling file interface contracts — use these EXACT names in your code:
+${siblingContracts || "(none)"}
 
 Your task: generate the complete content for "${fileSpec.path}"
 File purpose: ${fileSpec.description}
 
-IMPORTANT: Write complete, self-consistent code that works with the other files listed above.
 Output ONLY the raw file content — no markdown, no explanation.`,
         fileSpec.path,
         userApiKey
@@ -332,7 +406,7 @@ Output ONLY the raw file content — no markdown, no explanation.`,
       return { path: fileSpec.path, content };
     });
 
-    // allSettled: even if some files fail, collect successful ones for verify/design
+    // allSettled: a failing file never blocks its siblings
     const results = await Promise.allSettled(filePromises);
     const generatedFiles = results
       .filter((r): r is PromiseFulfilledResult<{ path: string; content: string }> =>
