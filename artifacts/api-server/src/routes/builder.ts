@@ -7,6 +7,7 @@ interface BuildRequest {
   prompt: string;
   provider?: "freemodel" | "xynera";
   apiKey?: string;
+  models?: Partial<PhaseModels>;
 }
 
 function parseBuildRequest(body: unknown): BuildRequest | null {
@@ -15,7 +16,19 @@ function parseBuildRequest(body: unknown): BuildRequest | null {
   if (typeof b["prompt"] !== "string" || !b["prompt"].trim()) return null;
   const provider = b["provider"] === "xynera" ? "xynera" : "freemodel";
   const apiKey = typeof b["apiKey"] === "string" && b["apiKey"].trim() ? b["apiKey"].trim() : undefined;
-  return { prompt: b["prompt"] as string, provider, apiKey };
+
+  // Optional per-phase model overrides — accept any non-empty string
+  let models: Partial<PhaseModels> | undefined;
+  if (typeof b["models"] === "object" && b["models"] !== null) {
+    const m = b["models"] as Record<string, unknown>;
+    models = {};
+    if (typeof m["planModel"]   === "string" && m["planModel"].trim())   models.planModel   = m["planModel"].trim();
+    if (typeof m["codeModel"]   === "string" && m["codeModel"].trim())   models.codeModel   = m["codeModel"].trim();
+    if (typeof m["verifyModel"] === "string" && m["verifyModel"].trim()) models.verifyModel = m["verifyModel"].trim();
+    if (Object.keys(models).length === 0) models = undefined;
+  }
+
+  return { prompt: b["prompt"] as string, provider, apiKey, models };
 }
 
 function sseWrite(res: import("express").Response, data: object): void {
@@ -297,8 +310,9 @@ router.post("/builder/stream", async (req, res) => {
   const parsed = parseBuildRequest(req.body);
   if (!parsed) { res.status(400).json({ error: "Invalid request" }); return; }
 
-  const { prompt, provider = "freemodel", apiKey: userApiKey } = parsed;
-  const phases = PHASE_MODELS[provider];
+  const { prompt, provider = "freemodel", apiKey: userApiKey, models: modelOverrides } = parsed;
+  // Merge provider defaults with any per-phase overrides from the client
+  const phases: PhaseModels = { ...PHASE_MODELS[provider], ...modelOverrides };
   startSSE(res);
 
   try {

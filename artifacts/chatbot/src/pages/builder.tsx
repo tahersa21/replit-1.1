@@ -36,6 +36,41 @@ const PHASE_MODELS: Record<Provider, PhaseModels> = {
   freemodel: { planModel: "gpt-4.1", codeModel: "gpt-5.5", verifyModel: "gpt-4.1" },
   xynera:    { planModel: "gpt-4.1", codeModel: "gpt-5.5", verifyModel: "gpt-4.1" },
 };
+
+// Models available for selection — grouped by family
+const MODEL_OPTIONS: { label: string; value: string; family: "gpt" | "claude" | "other" }[] = [
+  { label: "GPT-4.1",              value: "gpt-4.1",                       family: "gpt"    },
+  { label: "GPT-4.1 Mini",         value: "gpt-4.1-mini",                  family: "gpt"    },
+  { label: "GPT-5.5",              value: "gpt-5.5",                       family: "gpt"    },
+  { label: "Claude Sonnet 4.5 ⚡",  value: "claude-sonnet-4-5",            family: "claude" },
+  { label: "Claude Opus 4",        value: "claude-opus-4",                 family: "claude" },
+  { label: "Claude 3.7 Sonnet",    value: "claude-3-7-sonnet-20250219",    family: "claude" },
+  { label: "Claude 3.5 Sonnet",    value: "claude-3-5-sonnet-20241022",    family: "claude" },
+];
+
+const MODEL_PRESETS: { label: string; desc: string; models: PhaseModels }[] = [
+  {
+    label: "GPT",
+    desc: "GPT-4.1 + GPT-5.5",
+    models: { planModel: "gpt-4.1", codeModel: "gpt-5.5", verifyModel: "gpt-4.1" },
+  },
+  {
+    label: "Claude ⚡",
+    desc: "Sonnet 4.5 — أسرع",
+    models: { planModel: "claude-sonnet-4-5", codeModel: "claude-sonnet-4-5", verifyModel: "claude-sonnet-4-5" },
+  },
+  {
+    label: "Claude 💪",
+    desc: "Opus 4 — أقوى",
+    models: { planModel: "claude-opus-4", codeModel: "claude-opus-4", verifyModel: "claude-opus-4" },
+  },
+  {
+    label: "مختلط",
+    desc: "Claude للتخطيط، GPT-5.5 للكود",
+    models: { planModel: "claude-sonnet-4-5", codeModel: "gpt-5.5", verifyModel: "claude-sonnet-4-5" },
+  },
+];
+
 const PROVIDERS = [
   { id: "freemodel" as Provider, label: "FreeModel", color: "bg-emerald-500" },
   { id: "xynera"    as Provider, label: "Xynera",    color: "bg-violet-500"  },
@@ -214,13 +249,18 @@ export default function BuilderPage() {
   const [tokenWarnings, setTokenWarnings]   = useState<string[]>([]);
   const [contracts, setContracts]           = useState<{ path: string; contract: string }[]>([]);
 
+  const [customModels, setCustomModels] = useState<PhaseModels>(PHASE_MODELS["freemodel"]);
+
   const activeFileRef = useRef<string | null>(null);
   const abortRef      = useRef<AbortController | null>(null);
   const timerRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
+  // Reset models to provider defaults when provider changes
+  useEffect(() => { setCustomModels(PHASE_MODELS[provider]); }, [provider]);
+
   const currentProvider = PROVIDERS.find((p) => p.id === provider)!;
-  const phases          = PHASE_MODELS[provider];
+  const phases          = customModels;
   const isBuilding      = ["planning","coding","verifying","design_review"].includes(phase);
 
   // Start/stop elapsed timer with build state
@@ -269,7 +309,7 @@ export default function BuilderPage() {
     try {
       const response = await fetch("/api/builder/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, provider, ...(apiKey ? { apiKey } : {}) }),
+        body: JSON.stringify({ prompt, provider, models: customModels, ...(apiKey ? { apiKey } : {}) }),
         signal: ctrl.signal,
       });
       if (!response.ok || !response.body) throw new Error("فشل الاتصال بالخادم");
@@ -478,9 +518,37 @@ export default function BuilderPage() {
           {/* Models */}
           <div className="p-3 border-b border-border/30 bg-muted/10">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">المراحل</p>
+
+            {/* Model presets */}
+            {!isBuilding && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {MODEL_PRESETS.map((preset) => {
+                  const isActive =
+                    customModels.planModel   === preset.models.planModel &&
+                    customModels.codeModel   === preset.models.codeModel &&
+                    customModels.verifyModel === preset.models.verifyModel;
+                  return (
+                    <button key={preset.label} onClick={() => setCustomModels(preset.models)}
+                      title={preset.desc}
+                      className={cn(
+                        "text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-all",
+                        isActive
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-muted/60 text-muted-foreground border-border/40 hover:border-primary/40 hover:text-foreground"
+                      )}>
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Phase rows with per-phase model picker */}
             {STEPS.map(({ key: sk, label, Icon, modelKey }) => {
               const model = phases[modelKey]; const idx = PHASE_ORDER.indexOf(phase); const si = PHASE_ORDER.indexOf(sk);
               const isDone = idx > si || phase === "done"; const isActive = phase === sk;
+              // For design_review, verifyModel is shared — only show picker on verifying row to avoid duplicates
+              const canPick = !isBuilding && modelKey !== "verifyModel" || (modelKey === "verifyModel" && sk === "verifying");
               return (
                 <div key={sk} className={cn("flex items-center gap-2 px-2 py-1.5 rounded-lg border text-xs mb-1 transition-all",
                   isActive ? "bg-primary/8 border-primary/25" : isDone ? "bg-emerald-500/8 border-emerald-400/20" : "bg-transparent border-border/15")}>
@@ -489,7 +557,32 @@ export default function BuilderPage() {
                     {isDone ? <CheckCircle2 className="h-3 w-3" /> : isActive ? <Loader2 className="h-3 w-3 animate-spin" /> : <Icon className="h-3 w-3" />}
                   </div>
                   <span className={cn("font-medium flex-none w-12", isActive || isDone ? "text-foreground/90" : "text-muted-foreground/40")}>{label}</span>
-                  <span className={cn("text-[10px] font-mono truncate", isActive ? "text-primary font-semibold" : isDone ? "text-muted-foreground" : "text-muted-foreground/30")}>{model}</span>
+                  {canPick ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className={cn(
+                          "text-[10px] font-mono truncate flex items-center gap-0.5 rounded px-1 py-0.5 -ml-1 transition-colors",
+                          "hover:bg-muted/60 hover:text-foreground",
+                          isActive ? "text-primary font-semibold" : isDone ? "text-muted-foreground" : "text-muted-foreground/50"
+                        )}>
+                          {model}<ChevronDown className="h-2.5 w-2.5 opacity-50 flex-none" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="min-w-[180px]">
+                        {MODEL_OPTIONS.map((opt) => (
+                          <DropdownMenuItem key={opt.value}
+                            className={cn("text-xs font-mono gap-2", opt.value === model && "text-primary font-semibold")}
+                            onClick={() => setCustomModels((prev) => ({ ...prev, [modelKey]: opt.value }))}>
+                            <span className={cn("h-1.5 w-1.5 rounded-full flex-none",
+                              opt.family === "claude" ? "bg-violet-500" : opt.family === "gpt" ? "bg-emerald-500" : "bg-muted-foreground")} />
+                            {opt.label}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    <span className={cn("text-[10px] font-mono truncate", isActive ? "text-primary font-semibold" : isDone ? "text-muted-foreground" : "text-muted-foreground/30")}>{model}</span>
+                  )}
                 </div>
               );
             })}
