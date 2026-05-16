@@ -39,13 +39,13 @@ const PHASE_MODELS: Record<Provider, PhaseModels> = {
 
 // Models available for selection — grouped by family
 const MODEL_OPTIONS: { label: string; value: string; family: "gpt" | "claude" | "other" }[] = [
-  { label: "GPT-4.1",              value: "gpt-4.1",                       family: "gpt"    },
-  { label: "GPT-4.1 Mini",         value: "gpt-4.1-mini",                  family: "gpt"    },
-  { label: "GPT-5.5",              value: "gpt-5.5",                       family: "gpt"    },
-  { label: "Claude Sonnet 4.5 ⚡",  value: "claude-sonnet-4-5",            family: "claude" },
-  { label: "Claude Opus 4",        value: "claude-opus-4",                 family: "claude" },
-  { label: "Claude 3.7 Sonnet",    value: "claude-3-7-sonnet-20250219",    family: "claude" },
-  { label: "Claude 3.5 Sonnet",    value: "claude-3-5-sonnet-20241022",    family: "claude" },
+  { label: "GPT-4.1",                 value: "gpt-4.1",           family: "gpt"    },
+  { label: "GPT-4.1 Mini",            value: "gpt-4.1-mini",      family: "gpt"    },
+  { label: "GPT-5.5",                 value: "gpt-5.5",           family: "gpt"    },
+  { label: "Claude Opus 4.7 — الأقوى",   value: "claude-opus-4-7",     family: "claude" },
+  { label: "Claude 4.6 Sonnet — متوازن", value: "claude-sonnet-4-6",   family: "claude" },
+  { label: "Claude 4.5 Sonnet — مستقر", value: "claude-sonnet-4-5",   family: "claude" },
+  { label: "Claude 4.5 Haiku — الأسرع", value: "claude-haiku-4-5",    family: "claude" },
 ];
 
 const MODEL_PRESETS: { label: string; desc: string; models: PhaseModels }[] = [
@@ -55,19 +55,24 @@ const MODEL_PRESETS: { label: string; desc: string; models: PhaseModels }[] = [
     models: { planModel: "gpt-4.1", codeModel: "gpt-5.5", verifyModel: "gpt-4.1" },
   },
   {
-    label: "Claude ⚡",
-    desc: "Sonnet 4.5 — أسرع",
-    models: { planModel: "claude-sonnet-4-5", codeModel: "claude-sonnet-4-5", verifyModel: "claude-sonnet-4-5" },
+    label: "Haiku ⚡",
+    desc: "Claude 4.5 Haiku — الأسرع",
+    models: { planModel: "claude-haiku-4-5", codeModel: "claude-haiku-4-5", verifyModel: "claude-haiku-4-5" },
   },
   {
-    label: "Claude 💪",
-    desc: "Opus 4 — أقوى",
-    models: { planModel: "claude-opus-4", codeModel: "claude-opus-4", verifyModel: "claude-opus-4" },
+    label: "Sonnet",
+    desc: "Claude 4.6 Sonnet — متوازن وسريع",
+    models: { planModel: "claude-sonnet-4-6", codeModel: "claude-sonnet-4-6", verifyModel: "claude-sonnet-4-6" },
+  },
+  {
+    label: "Opus 💪",
+    desc: "Claude Opus 4.7 — الأقوى",
+    models: { planModel: "claude-opus-4-7", codeModel: "claude-opus-4-7", verifyModel: "claude-opus-4-7" },
   },
   {
     label: "مختلط",
-    desc: "Claude للتخطيط، GPT-5.5 للكود",
-    models: { planModel: "claude-sonnet-4-5", codeModel: "gpt-5.5", verifyModel: "claude-sonnet-4-5" },
+    desc: "Haiku للتخطيط، Opus للكود",
+    models: { planModel: "claude-haiku-4-5", codeModel: "claude-opus-4-7", verifyModel: "claude-sonnet-4-6" },
   },
 ];
 
