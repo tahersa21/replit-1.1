@@ -134,6 +134,69 @@ const VERIFIER_SYSTEM = `You are a senior code reviewer. Review the provided pro
 {"ok": true, "notes": "brief confirmation in Arabic"} or {"ok": false, "notes": "what is missing or broken in Arabic"}
 No markdown, no explanation — just the JSON object.`;
 
+// ── Improve route — streams improved file content token-by-token ──────────────
+router.post("/builder/improve", async (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const path       = typeof body["path"]        === "string" ? body["path"]        : "";
+  const content    = typeof body["content"]     === "string" ? body["content"]     : "";
+  const instruction= typeof body["instruction"] === "string" ? body["instruction"] : "";
+  const provider   = body["provider"] === "xynera" ? "xynera" : "freemodel" as const;
+  const allFiles   = Array.isArray(body["allFiles"])
+    ? (body["allFiles"] as { path: string; content: string }[])
+    : [];
+
+  if (!path || !content || !instruction) {
+    res.status(400).json({ error: "Missing required fields" }); return;
+  }
+
+  startSSE(res);
+
+  const context = allFiles
+    .filter((f) => f.path !== path)
+    .map((f) => `// FILE: ${f.path}\n${f.content.slice(0, 300)}`)
+    .join("\n\n");
+
+  const IMPROVE_SYSTEM = `You are an expert web developer improving existing code.
+Rules:
+- Output ONLY the complete improved file content — no markdown fences, no explanation
+- Apply the user's instruction precisely
+- Keep everything that wasn't asked to change
+- Ensure the file still works with the other project files`;
+
+  const userPrompt = `File to improve: ${path}
+${context ? `\nOther project files (for context):\n${context}\n` : ""}
+Current file content:
+${content}
+
+Instruction: ${instruction}
+
+Output the complete improved file content only.`;
+
+  try {
+    const client = makeOpenAIClient(provider);
+    const codeModel = PHASE_MODELS[provider].codeModel;
+
+    const stream = await client.chat.completions.create({
+      model: codeModel, stream: true,
+      messages: [{ role: "system", content: IMPROVE_SYSTEM }, { role: "user", content: userPrompt }],
+      max_tokens: 4000,
+    });
+
+    sseWrite(res, { type: "improve_start", path });
+    let full = "";
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content;
+      if (text) { full += text; sseWrite(res, { type: "improve_chunk", path, chunk: text }); }
+    }
+    sseWrite(res, { type: "improve_done", path, content: full });
+  } catch (err) {
+    req.log.error({ err }, "Improve stream error");
+    sseWrite(res, { type: "error", message: err instanceof Error ? err.message : "حدث خطأ" });
+  } finally {
+    res.end();
+  }
+});
+
 // ── Route ─────────────────────────────────────────────────────────────────────
 router.post("/builder/stream", async (req, res) => {
   const parsed = parseBuildRequest(req.body);
