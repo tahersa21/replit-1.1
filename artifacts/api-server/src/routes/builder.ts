@@ -70,46 +70,26 @@ function makeOpenAIClient(provider: "freemodel" | "xynera", userApiKey?: string)
   return new OpenAI({ apiKey: userApiKey ?? process.env.FREEMODEL_API_KEY ?? "", baseURL: "https://api.freemodel.dev/v1" });
 }
 
-// ── Non-streaming call — with timeout + client-disconnect abort ───────────────
-// timeoutMs applies only to callAI (planning/verify/design) — these expect
-// short JSON responses. File-generation streaming has no timeout intentionally.
+// ── Non-streaming call ────────────────────────────────────────────────────────
 async function callAI(
   provider: "freemodel" | "xynera",
   model: string,
   systemPrompt: string,
   userPrompt: string,
   userApiKey?: string,
-  maxTokens = 2000,
-  timeoutMs = 90_000,
-  signal?: AbortSignal
+  maxTokens = 2000
 ): Promise<string> {
-  const ctrl = new AbortController();
-
-  // Propagate client-disconnect from Express response
-  const onParentAbort = () => ctrl.abort(new Error("client disconnected"));
-  signal?.addEventListener("abort", onParentAbort, { once: true });
-
-  // Hard timeout for short JSON calls
-  const timer = setTimeout(() => ctrl.abort(new Error(`timeout after ${timeoutMs / 1000}s`)), timeoutMs);
-
-  try {
-    const client = makeOpenAIClient(provider, userApiKey);
-    const stream = await client.chat.completions.create(
-      { model, stream: true,
-        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-        max_tokens: maxTokens },
-      { signal: ctrl.signal }
-    );
-    let result = "";
-    for await (const chunk of stream) {
-      if (ctrl.signal.aborted) break;
-      result += chunk.choices[0]?.delta?.content ?? "";
-    }
-    return result;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", onParentAbort);
+  const client = makeOpenAIClient(provider, userApiKey);
+  const stream = await client.chat.completions.create({
+    model, stream: true,
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+    max_tokens: maxTokens,
+  });
+  let result = "";
+  for await (const chunk of stream) {
+    result += chunk.choices[0]?.delta?.content ?? "";
   }
+  return result;
 }
 
 // ── Phase 2a: Generate a lightweight interface contract for one file ──────────
@@ -122,14 +102,13 @@ async function generateInterface(
   fileSpec: { path: string; description: string },
   projectName: string,
   projectOverview: string,
-  userApiKey?: string,
-  signal?: AbortSignal
+  userApiKey?: string
 ): Promise<string> {
   try {
     return await callAI(
       provider, model, INTERFACE_SYSTEM,
       `Project: ${projectName}\nAll project files:\n${projectOverview}\n\nGenerate the interface contract for: ${fileSpec.path}\nPurpose: ${fileSpec.description}`,
-      userApiKey, 150, 30_000, signal
+      userApiKey, 150
     );
   } catch {
     return `(contract unavailable for ${fileSpec.path})`;
@@ -336,17 +315,11 @@ router.post("/builder/stream", async (req, res) => {
   const phases: PhaseModels = { ...PHASE_MODELS[provider], ...modelOverrides };
   startSSE(res);
 
-  // AbortSignal tied to client disconnect — cancels any in-flight callAI call
-  // immediately when the browser closes the tab or presses "إلغاء".
-  const clientCtrl = new AbortController();
-  req.on("close", () => clientCtrl.abort(new Error("client disconnected")));
-  const clientSignal = clientCtrl.signal;
-
   try {
-    // ── Phase 1: Planning (90s timeout — expects a short JSON response) ───────
+    // ── Phase 1: Planning ─────────────────────────────────────────────────────
     sseWrite(res, { type: "status", message: "جارٍ تحليل المشروع ورسم الخطة...", phase: "planning", model: phases.planModel });
 
-    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey, 2000, 90_000, clientSignal);
+    const planText = await callAI(provider, phases.planModel, PLANNER_SYSTEM, `Build this project: ${prompt}`, userApiKey, 2000);
 
     let plan: {
       projectName: string;
@@ -386,7 +359,7 @@ router.post("/builder/stream", async (req, res) => {
       plan.files.map(async (fileSpec) => {
         const contract = await generateInterface(
           provider, phases.planModel, fileSpec,
-          plan.projectName, projectOverview, userApiKey, clientSignal
+          plan.projectName, projectOverview, userApiKey
         );
         return { path: fileSpec.path, contract };
       })
@@ -462,7 +435,7 @@ Output ONLY the raw file content — no markdown, no explanation.`,
       `Project: ${plan.projectName}
 Files: ${generatedFiles.map((f) => `${f.path} (${f.content.length} chars)`).join(", ")}
 First file preview:\n${generatedFiles[0]?.content.slice(0, 600) ?? ""}`,
-      userApiKey, 500, 60_000, clientSignal
+      userApiKey, 500
     );
 
     let verification: { ok: boolean; notes: string } = { ok: true, notes: "تم البناء بنجاح ✓" };
@@ -485,7 +458,7 @@ ${cssFile?.content.slice(0, 2000) ?? "not provided"}
 
 User's original request: ${prompt}`;
 
-    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey, 2000, 60_000, clientSignal);
+    const designText = await callAI(provider, phases.verifyModel, DESIGN_REVIEWER_SYSTEM, designPrompt, userApiKey, 2000);
 
     interface DesignIssue {
       severity: "high" | "medium" | "low";
